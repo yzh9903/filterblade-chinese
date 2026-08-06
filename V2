@@ -1,0 +1,768 @@
+// ==UserScript==
+// @name         FilterBlade 中文汉化增强版 (去抖重扫+选择器预翻译)
+// @namespace    http://tampermonkey.net/
+// @version      5.9
+// @description  v5.9: MO去抖200ms，CSS选择器预翻译修复"复制filter"，片段拼接翻译，补充20+词条
+// @author       You
+// @match        https://www.filterblade.xyz/*
+// @grant        GM_getValue
+// @grant        GM_setValue
+// @grant        GM_registerMenuCommand
+// @run-at       document-idle
+// ==/UserScript==
+
+(function () {
+    'use strict';
+
+    // ==================== 1. 粘连文本预处理器 ====================
+    const STICKY_FIXES = [
+        [/Auto-Adjustfor\b/g, 'Auto-Adjust for'],
+        [/filterto\b/g, 'filter to'],
+        [/gamesPath\b/g, 'games Path'],
+        [/screento\b/g, 'screen to'],
+        [/filtersfor\b/g, 'filters for'],
+        [/soundsin\b/g, 'sounds in'],
+        [/editslike\b/g, 'edits like'],
+        [/toolfor\b/g, 'tool for'],
+        [/User-createdModules\b/g, 'User-created Modules']
+    ];
+
+    function fixStickyText(text) {
+        let r = text;
+        for (const [p, rep] of STICKY_FIXES) r = r.replace(p, rep);
+        return r;
+    }
+
+    // ==================== 2. 核心翻译词典 ====================
+    const BASE_DICT = {
+        // === v5.9 新增词条 ===
+        'to PoE': '到PoE',
+        'We also made a': '我们还制作了',
+        'about them.': '的相关介绍。',
+        'For your day-to-day filter creator!': '为您的日常过滤器创作而设计！',
+        'You can also view': '您还可以查看',
+        'Workflow': '工作流程',
+        'Useful features': '实用功能',
+        'Did I break it?': '我把它弄坏了？',
+        'export screen': '导出页面',
+        'tab.': '标签页。',
+        'For now...': '目前……',
+        "That's it!": '就这么简单！',
+        'screen to continue editing!': '页面继续编辑！',
+
+        // === 历史词条保留 ===
+        'Change reoccurring colors and sounds of the filter.': '更改过滤器中重复使用的颜色和音效。',
+        "If you change a color here, it will affect every entry in the filter that uses that color. Items that have the default appearance won't be listed here and can't be changed using the Color Editor.":
+            '在此处更改颜色会影响过滤器中使用该颜色的所有条目。具有默认外观的物品不会在此列出，也无法通过颜色编辑器更改。',
+        'Legacy Global Color&Sound Editors': '旧版全局颜色与音效编辑器',
+        'Additional means to edit the filter. These are designed for experienced FilterBlade users, developers and filter authors.':
+            '额外的过滤器编辑手段。专为有经验的 FilterBlade 用户、开发者和过滤器作者设计。',
+        'About the filter': '关于过滤器',
+        'Load filter from saveFile': '从存档文件加载过滤器',
+        'Finish': '完成',
+        'Sync Auto (overwritten by code!)': '自动同步（会被代码覆盖！）',
+        'Premium feature': '高级功能',
+        'continuous automated updates & fixes': '持续自动更新与修复',
+        'economy updates for tierlists of uniques, currency, etc.': '传奇物品、通货等分级列表的经济数据更新',
+        'support a small development team :)': '支持小型开发团队 :)',
+        'Sync (overwritten by code!)': '同步（会被代码覆盖！）',
+        'Recommended': '推荐',
+        'one-time upload to your PoE account': '一次性上传到您的 PoE 账户',
+        'no manual import required': '无需手动导入',
+        'instantly available inGame': '游戏内立即可用',
+        'manual file download': '手动下载文件',
+        'no console support': '不支持主机平台',
+        'import to PoE via game files on your PC': '通过PC上的游戏文件导入到PoE',
+        'Get all strictnesses': '获取所有严格度版本',
+        'as ZIP': 'ZIP压缩包',
+        'Individual files': '单独文件',
+        'SUPPORT US': '支持我们',
+        'Support the FilterBlade Dev-Team,': '支持 FilterBlade 开发团队，',
+        'NeverSink, Zoey & Haggis:': 'NeverSink、Zoey 和 Haggis：',
+        'Support us and get something in return,': '支持我们并获得回报，',
+        'Premium Auto-Update feature:': '高级自动更新功能：',
+        'Patreon': 'Patreon',
+        'About us': '关于我们',
+        'Review changes': '审查更改',
+        'Visualize every single change that you customized in the currently active filter': '可视化当前活动过滤器中您自定义的每一处更改',
+        'Execute': '执行',
+        'Compare Styles': '比较样式',
+        'WARNING: This severely limits the functionality on FilterBlade:': '警告：这会严重限制 FilterBlade 的功能：',
+        'Expect bugs!': '可能会出现错误！',
+        'You CAN test the uploaded filters in the loot simulator': '您可以在战利品模拟器中测试已上传的过滤器',
+        'You CAN use the advanced->structure screen to change the filter': '您可以使用高级->结构页面来修改过滤器',
+        "CAN'T reliably use the customizer with uploaded filters. There WILL be bugs.": '无法可靠地对已上传的过滤器使用自定义器。一定会出现错误。',
+        "CAN'T use the 'my filters' system with uploaded filters. Just doesn't work.": '无法对已上传的过滤器使用"我的过滤器"系统。该功能不可用。',
+        'This will ALSO be buggy with filters created on FilterBlade. Please use the': '这对在 FilterBlade 上创建的过滤器也会有问题。请使用',
+        'system instead of re-uploading files!.': '系统，而不是重新上传文件！',
+        'I understand': '我了解了',
+        'This file contains your full FilterBlade filter and saveState.': '此文件包含您的完整 FilterBlade 过滤器和保存状态。',
+        'You can download it as backUp or to move it between the beta and live version of': '您可以将其下载为备份，或在测试版与正式版之间迁移',
+        'Upload Customizer Definition Option-File': '上传自定义器定义选项文件',
+        'The option-file defines the connections between a filter and the customizer and': '选项文件定义了过滤器与自定义器之间的连接关系，以及',
+        'GitHub': 'GitHub',
+        'Upload Option File': '上传选项文件',
+        'Go Back': '返回',
+        'Create new filter': '创建新过滤器',
+        "other player's filters": '其他玩家的过滤器',
+        'your synced filters': '您同步的过滤器',
+        'Create new module': '创建新模块',
+        'Name': '名称',
+        'Login with PoE': '使用PoE登录',
+        'Logout': '退出登录',
+        'PoE 1': '流放之路1', 'PoE 2': '流放之路2',
+        'FAQ': '常见问题', 'Discord': 'Discord社区',
+        'Please consider supporting us by disabling AdBlock.': '请考虑关闭AdBlock以支持我们。',
+        'Checking for filter to load...': '正在检查要加载的过滤器...',
+        'Please wait...': '请稍候...',
+        'Okay': '确定', 'Okay!': '确定！',
+        'Auto-Adjust': '自动调整', 'for build': '适配BD',
+        'Game mode:': '游戏模式:', 'User-created': '用户创建',
+        'Modules': '模块', 'Switch view': '切换视图',
+        'Loot Generator': '战利品生成器', 'Item Builder': '物品构建器',
+        'Generate loot': '生成战利品', 'Generate valuable loot': '生成高价值战利品',
+        'Change loot pile background image': '更改战利品堆背景图片',
+        'Config': '配置', 'Click an Item above to edit.': '点击上方物品进行编辑。',
+        'Decorators': '装饰器', 'What are Decorators?': '什么是装饰器？',
+        'Create your own items and see how they look in the filter.': '创建您自己的物品，查看它们在过滤器中的显示效果。',
+        'Theme editing is coming soon to PoE 1!': '主题编辑功能即将登陆流放之路1！',
+        'Only use these tools if you know what you are doing.': '仅在您清楚操作后果时使用这些工具。',
+        "Most users won't need to use any of them.": '大多数用户无需使用这些工具。',
+        'video': '视频', 'Apply': '应用',
+        'Initializing FilterBlade...': '正在初始化 FilterBlade...',
+        'Load Auto-Save?': '加载自动保存？', 'No, thanks': '不用了，谢谢',
+        "If you want to delete these auto-saved changes, click on 'Reset filter'": '如需删除这些自动保存的更改，请点击"重置过滤器"',
+        'Filter loaded via sharing link!': '已通过分享链接加载过滤器！',
+        'Sound files download:': '音效文件下载:',
+        'Export filter': '导出过滤器', 'Import Item from PoE': '从PoE导入物品',
+        'Zone Level:': '区域等级:',
+        'Legacy Global Colors & Sound Editors': '旧版全局颜色与音效编辑器',
+        'Global One-Click Edits': '全局一键编辑',
+        'Copy filter': '复制过滤器', 'Reset filter': '重置过滤器',
+        'You can then use these modules on the': '然后您可以在以下位置使用这些模块：',
+        'when creating a new filter.': '创建新过滤器时。',
+        'Auto-Adjust for build': '根据BD自动调整',
+        'Export filter to PoE': '导出过滤器到PoE',
+        'Customize filter': '自定义过滤器',
+        'Reset filter settings': '重置过滤器设置',
+        'User-created Modules': '用户创建模块',
+        'FilterBlade is an online editor for loot-filters for the games Path of Exile 1 and 2 based on NeverSink\'s filters.':
+            'FilterBlade 是一个基于 NeverSink 过滤器方案的在线编辑器，专为《流放之路》1代与2代的战利品过滤器设计。',
+        'The base NeverSink filter is already solid. You can do a quick setup using the options above to adapt it to your build, style and progress in the game. If you want, you can further fine-tune it using the Customize tab.':
+            '基础 NeverSink 过滤器已非常完善。您可通过上方选项快速配置，使其适配您的BD、外观风格与游戏进度。如需进一步微调，可使用"自定义"标签页。',
+        "Open the Auto-Adjust for build and select your inGame character class, then apply and export the filter. That's it! For now...When you notice things that you'd like to change, you can always come back to fine-tune!":
+            '打开"根据BD自动调整"，选择您的游戏内角色职业，然后应用并导出过滤器。就这么简单！目前……当您发现需要调整的内容时，可以随时回来进行微调！',
+        "You're done? Head to the export screen to save the filter to your FilterBlade account and either download a filter-file or upload it directly into your PoE account.":
+            '完成了？前往导出页面，将过滤器保存到您的 FilterBlade 账户，可以下载过滤器文件或直接上传到您的 PoE 账户。',
+        "Login with your PoE account to save your filter during export. When you return to FilterBlade, you will see all your saved filters on the 'My Filters' screen to continue editing!":
+            '使用您的 PoE 账户登录，以便在导出时保存过滤器。当您返回 FilterBlade 时，可以在"我的过滤器"页面查看所有已保存的过滤器并继续编辑！',
+        'Edit every part of the filter: Colors, tierlists, sounds in a sorted structure. Every edit done is automatically saved and instantly reflected in all other parts of the website: Customize':
+            '编辑过滤器的每个部分：颜色、分级列表、音效，均采用结构化排序。所有编辑都会自动保存，并即时反映在网站的所有其他部分：自定义',
+        'Want to test your filter? Verify your results? Find out why an item inGame is highlighted? Check out our tools on the Simulate screen.':
+            '想测试您的过滤器？验证结果？想知道为什么游戏内某个物品被高亮？请查看模拟页面的工具。',
+        "Planning a big rework of colors, sizes and sounds? The 'Themes' tab has a lot of tools for large-scale edits like that!":
+            '计划对颜色、大小和音效进行大规模调整？"主题"标签页提供了大量用于此类批量编辑的工具！',
+        'The Overview tab shows typical items with their current visuals and explanations of why they are special. Good to get an overview of the current filter and learn about its colors and highlights.':
+            '概览标签页展示典型物品的当前视觉效果及其特殊原因的说明。有助于全面了解当前过滤器，并了解其颜色和高亮规则。',
+        'Quick edits that affect the whole filter and are applied BEFORE (i.e. have less priority than) your other changes.':
+            '影响整个过滤器的快速编辑，在其他更改之前应用（即优先级低于您的其他更改）。',
+        "Modules are building blocks for filters. If you have multiple filters using common changes you can keep the common changes in a module. You can also use other people's modules on the My Modules tab.":
+            '模块是过滤器的构建块。如果您有多个过滤器使用相同的更改，可以将这些通用更改保存在一个模块中。您也可以在"我的模块"标签页中使用其他人的模块。',
+        'Softcore': '软核', 'Semi-Strict': '半严格', 'Normal': '普通',
+        'Profile': '个人资料', 'Colors': '颜色', 'Filters': '过滤器',
+        'Tierlists': '分级列表', 'Intro': '简介', 'Start': '开始',
+        'Overview': '概览', 'Customize': '自定义', 'Simulate': '模拟',
+        'Themes': '主题', 'Advanced': '高级', 'Home': '首页',
+        'Save': '保存', 'Load': '加载', 'Export': '导出',
+        'Import': '导入', 'Reset': '重置', 'Search': '搜索',
+        'Filter': '过滤器', 'Settings': '设置', 'About': '关于',
+        'Download': '下载', 'Delete': '删除', 'Edit': '编辑',
+        'Add': '添加', 'Cancel': '取消', 'Confirm': '确认',
+        'Yes': '是', 'No': '否', 'Magic': '魔法', 'Rare': '稀有',
+        'Unique': '传奇', 'Duplicate': '复制', 'Enabled': '启用',
+        'Disabled': '禁用', 'Standard': '标准', 'Hardcore': '专家',
+        'SSF': '独狼', 'Trade': '交易', 'Stash': '仓库',
+        'Currency': '通货', 'Map': '地图', 'Gem': '宝石',
+        'Flask': '药水', 'Weapon': '武器', 'Armour': '护甲',
+        'Level': '等级', 'Corrupted': '已腐化', 'Mirrored': '已复制',
+        'Show': '显示', 'Hide': '隐藏', 'Style': '样式',
+        'Color': '颜色', 'Size': '大小', 'Sound': '音效',
+        'Rule': '规则', 'Condition': '条件', 'Action': '动作',
+        'Priority': '优先级', 'League': '赛季',
+        'My filters': '我的过滤器', 'My Modules': '我的模块',
+        'Report an issue': '反馈问题', 'Get started!': '立即开始！',
+        'What is a loot-filter?': '什么是战利品过滤器？',
+        'Not sure where to start?': '不知道从哪里开始？',
+        'How to update?': '如何更新？', 'Resume later': '稍后继续',
+        'Default filter colors:': '默认过滤器颜色:', 'How to use?': '如何使用？',
+        'Add Rule': '添加规则', 'Add Group': '添加分组',
+        'Move Up': '上移', 'Move Down': '下移',
+        'Collapse All': '全部折叠', 'Expand All': '全部展开',
+        'Filter Logic': '过滤逻辑', 'Match All': '匹配全部', 'Match Any': '匹配任意',
+        'Drop Level': '掉落等级', 'Item Level': '物品等级', 'Area Level': '区域等级',
+        'Base Type': '基础类型', 'Item Class': '物品类别', 'Gem Level': '宝石等级',
+        'Map Tier': '地图阶级', 'Identified': '已鉴定', 'Unidentified': '未鉴定',
+        'Elder Item': '长老物品', 'Shaper Item': '塑界者物品',
+        'Crusader Item': '圣战者物品', 'Hunter Item': '狩猎者物品',
+        'Redeemer Item': '救赎者物品', 'Warlord Item': '总督军物品',
+        'Synthesised Item': '忆境物品', 'Fractured Item': '破裂物品',
+        'Influenced Item': '影响物品', 'Has Enchantment': '拥有附魔',
+        'Has Implicit Mod': '拥有基底词缀', 'Has Explicit Mod': '拥有显式词缀',
+        'Mod Value': '词缀数值', 'Text Color': '文字颜色',
+        'Background Color': '背景颜色', 'Border Color': '边框颜色',
+        'Play Sound': '播放音效', 'Disable Drop Sound': '禁用掉落音效',
+        'Beam Effect': '光柱效果', 'Advanced Tooltip': '高级提示框',
+        'Custom Text': '自定义文本', 'Always Show': '始终显示', 'Never Hide': '永不隐藏',
+        'Value:': '数值:', 'Operator:': '运算符:',
+        'Equals': '等于', 'Greater Than': '大于', 'Less Than': '小于',
+        'Contains': '包含', 'Not Equals': '不等于',
+        'AND': '且', 'OR': '或', 'NOT': '非',
+        'Strictness': '严格度', 'Loot Tier': '掉落等级',
+        'Base Types': '基础类型', 'Item Classes': '物品类别',
+        'Rarity': '稀有度', 'Prophecy': '预言',
+        'Divination Card': '命运卡', 'Jewellery': '珠宝',
+        'Sockets': '插槽', 'Links': '连接', 'Quality': '品质',
+        'Elder': '长老', 'Shaper': '塑界者', 'Crusader': '圣战者',
+        'Hunter': '狩猎者', 'Redeemer': '救赎者', 'Warlord': '总督军',
+        'Synthesised': '忆境', 'Fractured': '破裂', 'Influenced': '影响',
+        'Alert': '提醒', 'Minimap Icon': '小地图图标', 'Beam': '光柱',
+        'Copy to Clipboard': '复制到剪贴板',
+        'Light Mode': '浅色模式', 'Dark Mode': '深色模式',
+        'By default, most items look the same, no matter how rare or useful or valuable.': '默认情况下，大多数物品看起来都一样，无论其稀有度、实用性或价值如何。',
+        'A filter highlights items based on type and value (based on current inGame economy), and hides bad ones.': '过滤器会根据类型和价值（基于当前游戏内经济）高亮显示有用物品，并隐藏无用物品。',
+        'You can customize them to fit to your character and style!': '您可以自定义它们以适配您的角色和风格！',
+        'They are officially supported tools for Path of Exile!': '它们是《流放之路》官方支持的工具！',
+        "You can come back later to fine-tune when you notice things that you'd like to change!": '当您发现需要调整的内容时，可以随时回来进行微调！',
+        "FilterBlade will ALWAYS give you the newest up-to-date filter. You can customize a filter now and load it again later and automatically get an updated version when you export!": 'FilterBlade 始终为您提供最新的过滤器。您可以现在自定义过滤器，稍后重新加载，并在导出时自动获取更新版本！',
+        "The Customizer is built fail-save and it's hard to 'break' your filter by using it. You will see warnings if you're about to do something dangerous. There is also additional validation when exporting.": '自定义器内置防错机制，很难因操作而"损坏"过滤器。当您即将执行危险操作时会看到警告。导出时还有额外的验证。',
+        'You can right-click e.g. an item to jump to its rule in the Customizer or a tierlist element to move it! (Long press on mobile)': '您可以右键点击例如某个物品，跳转到自定义器中对应的规则，或点击分级列表元素来移动它！（移动端长按）',
+        'Safely fine-tune the entire filter in detail.': '安全地详细微调整个过滤器。',
+        'Select how many items are shown.': '选择显示的物品数量。',
+        'Generate a filter specific to your inGame character!': '生成专属于您游戏角色的过滤器！',
+        'Download the filter, or sync it to your PoE profile!': '下载过滤器，或同步到您的 PoE 账户！',
+        'Game mode: Softcore': '游戏模式: 软核',
+        'Game mode:Softcore': '游戏模式:软核',
+        'Project Manager, Lead Developer.': '项目经理，首席开发者。',
+        'Project Focus: Architecture, Domain Languages, Data Processing': '项目重点：架构、领域语言、数据处理',
+        'Developer, Designer, Content Creator.': '开发者、设计师、内容创作者。',
+        'Project Focus: Customization, Layout and UI, General Development.': '项目重点：自定义、布局与UI、通用开发。',
+        'Graphic Designer.': '平面设计师。',
+        'Project Focus: Icons, Backgrounds, Videos.': '项目重点：图标、背景、视频。',
+        'Developer, data analyst, php dev': '开发者、数据分析师、PHP开发',
+        'Project Focus: Loot generation, layout and UI, save/load functions.': '项目重点：战利品生成、布局与UI、保存/加载功能。',
+        'Welcome to FilterBlade!': '欢迎来到 FilterBlade！',
+        'Our new design!': '全新设计！',
+        'FilterBlade now supports mobile devices! You can open the navigation using the button in the top right corner.':
+            'FilterBlade 现已支持移动设备！您可以使用右上角的按钮打开导航菜单。',
+        "based on NeverSink's filters.": '基于 NeverSink 的过滤器方案。',
+        'It turns': '它将', 'Into': '转变为',
+        'build': 'BD', 'progress': '进度', 'Open the': '打开',
+        'Path of Exile 1 and 2': '流放之路1和2',
+        'Use the FilterBlade appearance editor to find the right colors for your filter and preview them live.':
+            '使用 FilterBlade 外观编辑器为您的过滤器找到合适的颜色并实时预览。',
+        'FilterBlade is an online editor for loot-filters for the games': 'FilterBlade 是一个在线战利品过滤器编辑器，适用于游戏',
+        'this': '这个',
+        'in the game. If you want, you can further fine-tune it using the': '在游戏中。如果您愿意，可以使用以下工具进一步微调：',
+        'and select your inGame character class, then apply and': '并选择您的游戏内角色职业，然后应用并',
+        'the filter. That\'s it!': '过滤器。就这么简单！',
+        "You're done? Head to the": '完成了？前往',
+        'to save the filter to your FilterBlade account and either download a filter-file': '将过滤器保存到您的 FilterBlade 账户，可以下载过滤器文件',
+        'Login with your PoE account to save your filter during': '使用您的 PoE 账户登录，以便在以下期间保存过滤器：',
+        'When you return to FilterBlade, you will see all your saved filters on the': '当您返回 FilterBlade 时，可以在以下位置查看所有已保存的过滤器：'
+    };
+
+    // ==================== 3. CSS 选择器预翻译表 (v5.9 新增) ====================
+    // 针对被框架反复重建、文本匹配无法稳定的顽固节点
+    const SELECTOR_TRANSLATIONS = [
+        // "Copy filter" 按钮 - 多种可能的选择器
+        { selector: 'button[ng-click*="copy"], button[ng-click*="Copy"]', text: '复制过滤器', attr: null },
+        { selector: '[data-action="copyFilter"], [data-action="copy-filter"]', text: '复制过滤器', attr: null },
+        // 如果上面都不命中，用文本内容定位（最后手段）
+        { selector: 'button', textMatch: /^Copy\s+filter$/i, replacement: '复制过滤器' },
+        { selector: 'a', textMatch: /^Copy\s+filter$/i, replacement: '复制过滤器' },
+        { selector: 'span', textMatch: /^Copy\s+filter$/i, replacement: '复制过滤器' },
+    ];
+
+    // ==================== 4. 上下文规则引擎 ====================
+    const CONTEXT_RULES = [
+        { word: 'Map', rules: [
+            { selector: '.atlas-panel, .map-tier-selector, [class*="map"]', translation: '地图' },
+            { selector: '.mapping-config, .data-bind-panel, [class*="mapping"]', translation: '映射' },
+            { selector: '.filter-rule, .loot-filter-editor', translation: '地图' }
+        ], fallback: '地图' },
+        { word: 'Style', rules: [
+            { selector: '.visual-style-picker, .appearance-panel', translation: '外观样式' },
+            { selector: '.code-editor, .syntax-highlight', translation: '代码风格' },
+            { selector: '.filter-style-config', translation: '过滤器样式' }
+        ], fallback: '样式' },
+        { word: 'Rule', rules: [
+            { selector: '.filter-rule-list, .loot-rule-editor', translation: '过滤规则' },
+            { selector: '.grammar-section, .syntax-docs', translation: '语法规则' }
+        ], fallback: '规则' },
+        { word: 'Set', rules: [
+            { selector: '.item-set, .equipment-set', translation: '套装' },
+            { selector: '.set-operation, .collection-panel', translation: '集合' },
+            { selector: 'button, .action-btn', translation: '设定' }
+        ], fallback: '套装' },
+        { word: 'Craft', rules: [
+            { selector: '.crafting-bench, .craft-simulator', translation: '工艺制作' },
+            { selector: '.harvest-craft, .craft-option', translation: '锻造' }
+        ], fallback: '工艺' },
+        { word: 'Level', rules: [
+            { selector: '.gem-level-input, [class*="gemLevel"]', translation: '宝石等级' },
+            { selector: '.drop-level-input, [class*="dropLevel"]', translation: '掉落等级' },
+            { selector: '.item-level-input, [class*="itemLevel"]', translation: '物品等级' },
+            { selector: '.area-level-input, [class*="areaLevel"]', translation: '区域等级' }
+        ], fallback: '等级' },
+        { word: 'Type', rules: [
+            { selector: '.base-type-selector, [class*="baseType"]', translation: '基础类型' },
+            { selector: '.item-class-selector, [class*="itemClass"]', translation: '物品类别' }
+        ], fallback: '类型' },
+        { word: 'Color', rules: [
+            { selector: '.text-color-picker, [class*="textColor"]', translation: '文字颜色' },
+            { selector: '.bg-color-picker, [class*="backgroundColor"], [class*="bgColor"]', translation: '背景颜色' },
+            { selector: '.border-color-picker, [class*="borderColor"]', translation: '边框颜色' }
+        ], fallback: '颜色' },
+        { word: 'Sound', rules: [
+            { selector: '.sound-picker, [class*="soundSelect"]', translation: '播放音效' },
+            { selector: '.disable-sound-toggle, [class*="disableSound"]', translation: '禁用掉落音效' }
+        ], fallback: '音效' }
+    ];
+
+    // ==================== 5. 用户自定义词典 ====================
+    let userDict = {};
+    try { userDict = GM_getValue('filterblade_user_dict', {}); } catch (e) {}
+
+    GM_registerMenuCommand('📝 编辑自定义词典', () => {
+        const input = prompt('请输入自定义翻译（JSON格式）:\n例: {"New Word": "新词翻译"}', JSON.stringify(userDict));
+        if (input !== null) {
+            try {
+                GM_setValue('filterblade_user_dict', JSON.parse(input));
+                alert('✅ 自定义词典已保存，刷新页面生效');
+                location.reload();
+            } catch (e) { alert('❌ JSON格式错误: ' + e.message); }
+        }
+    });
+
+    // ==================== 6. 翻译引擎 (v5.9) ====================
+    function normalizeText(text) {
+        let t = text
+            .replace(/[\u200B-\u200D\uFEFF]/g, '')
+            .replace(/\u00A0/g, ' ')
+            .replace(/[\r\n\t]+/g, ' ')
+            .replace(/\s{2,}/g, ' ')
+            .trim();
+        t = fixStickyText(t);
+        return t;
+    }
+
+    function stripToAlnum(text) { return text.replace(/[^a-zA-Z0-9]/g, '').toLowerCase(); }
+
+    function safeReplace(text, key, replacement) {
+        let result = '', lastIndex = 0, searchIndex = 0;
+        while (true) {
+            const idx = text.indexOf(key, searchIndex);
+            if (idx === -1) break;
+            const cb = idx > 0 ? text[idx - 1] : '';
+            const ca = idx + key.length < text.length ? text[idx + key.length] : '';
+            if ((!cb || !/[a-zA-Z0-9]/.test(cb)) && (!ca || !/[a-zA-Z0-9]/.test(ca))) {
+                result += text.slice(lastIndex, idx) + replacement;
+                lastIndex = idx + key.length;
+            }
+            searchIndex = idx + 1;
+        }
+        result += text.slice(lastIndex);
+        return result;
+    }
+
+    const MERGED_DICT = { ...BASE_DICT, ...userDict };
+    const NORMALIZED_DICT = {};
+    const ALNUM_INDEX = {};
+    const EXACT_SHORT_DICT = {};
+    const SUFFIX_DICT = {};
+
+    const SKIP_WORDS = new Set([
+        'filterblade', 'neversink', 'poe', 'pathofexile', 'github',
+        'adblock', 'javascript', 'discord', 'beta', 'patreon',
+        'twitter', 'youtube', 'twitch', 'facebook', 'instagram',
+        'reddit', 'tiktok'
+    ]);
+
+    for (const [key, value] of Object.entries(MERGED_DICT)) {
+        const nk = normalizeText(key);
+        NORMALIZED_DICT[nk] = value;
+        const ak = stripToAlnum(nk);
+        if (ak && !SKIP_WORDS.has(ak)) ALNUM_INDEX[ak] = value;
+        if (/^[a-zA-Z]{1,5}$/.test(nk)) {
+            EXACT_SHORT_DICT[nk.toLowerCase()] = value;
+            SUFFIX_DICT[nk.toLowerCase()] = value;
+        }
+    }
+
+    const SORTED_KEYS = Object.keys(NORMALIZED_DICT).sort((a, b) => b.length - a.length);
+    const translatedNodes = new WeakSet();
+
+    function getContextTranslation(normalizedText, element) {
+        const rule = CONTEXT_RULES.find(r => r.word === normalizedText);
+        if (!rule || !element) return null;
+        for (const r of rule.rules) { if (element.closest(r.selector)) return r.translation; }
+        return rule.fallback;
+    }
+
+    function mergeAdjacentTextNodes(parent) {
+        if (!parent || !parent.childNodes) return;
+        const childNodes = Array.from(parent.childNodes);
+        for (let i = 0; i < childNodes.length; i++) {
+            const node = childNodes[i];
+            if (node.nodeType !== Node.TEXT_NODE) continue;
+            if (translatedNodes.has(node)) continue;
+            let merged = node.textContent;
+            let j = i + 1;
+            while (j < childNodes.length && childNodes[j].nodeType === Node.TEXT_NODE && !translatedNodes.has(childNodes[j])) {
+                merged += childNodes[j].textContent;
+                childNodes[j].textContent = '';
+                translatedNodes.add(childNodes[j]);
+                j++;
+            }
+            if (j > i + 1) node.textContent = merged;
+        }
+    }
+
+    function translateTrailingEnglish(text) {
+        const match = text.match(/^(.*[\u4e00-\u9fff].*?)\s+([a-zA-Z][a-zA-Z0-9\-]*)([.!?,;:]*)$/);
+        if (!match) return text;
+        const [, prefix, engWord, punctuation] = match;
+        const lowerWord = engWord.toLowerCase();
+        if (SUFFIX_DICT[lowerWord]) return prefix + ' ' + SUFFIX_DICT[lowerWord] + punctuation;
+        return text;
+    }
+
+    /**
+     * v5.9: 片段拼接翻译
+     * 当单个 TextNode 内容太短且不匹配任何词典条目时，
+     * 尝试拼接同一父元素下所有未翻译的兄弟 TextNode，整体匹配
+     */
+    function tryParentConcatTranslate(node) {
+        const parent = node.parentElement;
+        if (!parent || translatedNodes.has(node)) return false;
+
+        // 收集父元素下所有未翻译的 TextNode
+        const siblings = [];
+        for (const child of parent.childNodes) {
+            if (child.nodeType === Node.TEXT_NODE && !translatedNodes.has(child)) {
+                siblings.push(child);
+            }
+        }
+        if (siblings.length < 2) return false;
+
+        // 拼接所有片段
+        const concatenated = siblings.map(s => s.textContent).join('');
+        const normalized = normalizeText(concatenated);
+        if (!normalized || normalized.length < 10) return false;
+
+        // 尝试匹配完整句子
+        const lowerNorm = normalized.toLowerCase();
+        let translation = null;
+
+        // 精确匹配
+        if (NORMALIZED_DICT[normalized]) {
+            translation = NORMALIZED_DICT[normalized];
+        } else if (EXACT_SHORT_DICT[lowerNorm]) {
+            translation = EXACT_SHORT_DICT[lowerNorm];
+        }
+
+        // alnum 模糊匹配
+        if (!translation && /^[a-zA-Z0-9\s\-_.,!?'"()]+$/.test(normalized)) {
+            const alnumKey = stripToAlnum(normalized);
+            if (alnumKey && ALNUM_INDEX[alnumKey]) translation = ALNUM_INDEX[alnumKey];
+        }
+
+        if (!translation) return false;
+
+        // 将翻译结果写入第一个节点，清空其余节点
+        siblings[0].textContent = translation;
+        translatedNodes.add(siblings[0]);
+        for (let i = 1; i < siblings.length; i++) {
+            siblings[i].textContent = '';
+            translatedNodes.add(siblings[i]);
+        }
+        return true;
+    }
+
+    function translateNode(node) {
+        if (node.nodeType !== Node.TEXT_NODE) return;
+        if (translatedNodes.has(node)) return;
+        const parent = node.parentElement;
+        if (!parent) return;
+        if (['SCRIPT', 'STYLE', 'TEXTAREA', 'INPUT', 'NOSCRIPT'].includes(parent.tagName)) return;
+
+        const rawText = node.textContent;
+        const normalized = normalizeText(rawText);
+        if (!normalized) return;
+
+        let text = normalized;
+        let changed = false;
+
+        // Step 1: 精确短词全等匹配
+        const lowerNorm = text.toLowerCase();
+        if (EXACT_SHORT_DICT[lowerNorm]) {
+            text = EXACT_SHORT_DICT[lowerNorm];
+            changed = true;
+        }
+
+        // Step 2: 长key子串匹配
+        if (!changed) {
+            for (const key of SORTED_KEYS) {
+                if (key.length <= 5 && /^[a-zA-Z]{1,5}$/.test(key)) continue;
+                if (!text.includes(key)) continue;
+                const ctxTrans = getContextTranslation(key, parent);
+                const replacement = ctxTrans || NORMALIZED_DICT[key];
+                if (replacement) {
+                    const newText = safeReplace(text, key, replacement);
+                    if (newText !== text) { text = newText; changed = true; }
+                }
+            }
+        }
+
+        // Step 3: alnum模糊回退
+        if (!changed && text.length < 80 && /^[a-zA-Z0-9\s\-_]+$/.test(text.trim())) {
+            const alnumKey = stripToAlnum(text);
+            if (alnumKey && ALNUM_INDEX[alnumKey]) { text = ALNUM_INDEX[alnumKey]; changed = true; }
+        }
+
+        // Step 4: 后缀剥离翻译
+        if (!changed && /[\u4e00-\u9fff]/.test(text) && /[a-zA-Z]{2,}/.test(text)) {
+            const newText = translateTrailingEnglish(text);
+            if (newText !== text) { text = newText; changed = true; }
+        }
+
+        // v5.9 Step 5: 片段拼接翻译（兜底）
+        if (!changed && text.length < 60) {
+            if (tryParentConcatTranslate(node)) return; // 已由拼接处理
+        }
+
+        if (changed) {
+            node.textContent = text;
+            translatedNodes.add(node);
+        }
+    }
+
+    /**
+     * v5.9: CSS 选择器预翻译
+     * 在所有文本遍历之前执行，直接定位顽固节点
+     */
+    function applySelectorTranslations(root) {
+        for (const entry of SELECTOR_TRANSLATIONS) {
+            try {
+                const elements = root.querySelectorAll(entry.selector);
+                for (const el of elements) {
+                    if (entry.textMatch) {
+                        // 文本内容匹配模式
+                        const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, null, false);
+                        while (walker.nextNode()) {
+                            const tn = walker.currentNode;
+                            if (translatedNodes.has(tn)) continue;
+                            const raw = normalizeText(tn.textContent);
+                            if (entry.textMatch.test(raw)) {
+                                tn.textContent = entry.replacement;
+                                translatedNodes.add(tn);
+                            }
+                        }
+                    } else if (entry.text !== undefined) {
+                        // 直接文本替换模式
+                        const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, null, false);
+                        while (walker.nextNode()) {
+                            const tn = walker.currentNode;
+                            if (translatedNodes.has(tn)) continue;
+                            const raw = normalizeText(tn.textContent);
+                            if (raw && /[a-zA-Z]/.test(raw)) {
+                                tn.textContent = entry.text;
+                                translatedNodes.add(tn);
+                                break; // 只替换第一个文本节点
+                            }
+                        }
+                    }
+                }
+            } catch (e) { /* 选择器无效时静默跳过 */ }
+        }
+    }
+
+    function translateRoot(root) {
+        // v5.9: 先执行选择器预翻译
+        if (root.nodeType === Node.ELEMENT_NODE) {
+            applySelectorTranslations(root);
+            mergeAdjacentTextNodes(root);
+            root.querySelectorAll('*').forEach(el => mergeAdjacentTextNodes(el));
+        }
+
+        const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null, false);
+        const nodes = [];
+        while (walker.nextNode()) nodes.push(walker.currentNode);
+        nodes.forEach(translateNode);
+    }
+
+    // ==================== 7. 🔍 词典一致性自动诊断引擎 ====================
+    function runSelfDiagnostic() {
+        const report = [];
+        const ts = new Date().toLocaleString();
+        report.push(`# FilterBlade 词典一致性诊断报告`, `# 生成时间: ${ts}`, `# 脚本版本: 5.9`, '');
+
+        report.push('## [检查1] 词典Key清洗一致性');
+        let ki = 0;
+        for (const [ok] of Object.entries(MERGED_DICT)) { if (normalizeText(ok) !== ok) { ki++; report.push(`⚠️ "${ok}" → "${normalizeText(ok)}"`); } }
+        report.push(ki === 0 ? '✅ 全部一致' : `${ki} 个不一致`, '');
+
+        report.push('## [检查2] DOM未翻译英文文本');
+        const w = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null, false);
+        let uc = 0;
+        const SKIP_TAGS = ['SCRIPT','STYLE','TEXTAREA','INPUT','CODE','PRE','NOSCRIPT'];
+        while (w.nextNode()) {
+            const n = w.currentNode, p = n.parentElement;
+            if (!p || SKIP_TAGS.includes(p.tagName) || translatedNodes.has(n)) continue;
+            const raw = n.textContent;
+            if (!raw || !/[a-zA-Z]{2,}/.test(raw)) continue;
+            const cl = normalizeText(raw);
+            if (!cl || !/[a-zA-Z]{2,}/.test(cl)) continue;
+            if (SKIP_WORDS.has(stripToAlnum(cl))) continue;
+            uc++;
+            if (uc <= 30) report.push(`[${uc}] "${cl.substring(0,80)}" <${p.tagName.toLowerCase()}>`);
+        }
+        report.push(uc === 0 ? '✅ 无未翻译文本' : `共 ${uc} 处`, '');
+
+        report.push('## [检查3] 已翻译节点英文残留');
+        const ALLOWED = new Set(['FilterBlade','PoE','NeverSink','BD','SSF','UI','Discord','AdBlock','JavaScript','BEFORE','AFTER','GitHub','Patreon','Twitter','YouTube','Twitch']);
+        const tw = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null, false);
+        let hc = 0;
+        while (tw.nextNode()) {
+            const n = tw.currentNode, p = n.parentElement;
+            if (!p || !translatedNodes.has(n)) continue;
+            const t = n.textContent;
+            if (!/[\u4e00-\u9fff]/.test(t) || !/[a-zA-Z]{3,}/.test(t)) continue;
+            const words = t.match(/[a-zA-Z][a-zA-Z0-9\-]{2,}/g) || [];
+            const bad = words.filter(w => !ALLOWED.has(w) && !ALLOWED.has(w.replace(/s$/,'')));
+            if (bad.length) { hc++; if (hc<=20) report.push(`[${hc}] ${bad.join(',')} | "${t.substring(0,80)}"`); }
+        }
+        report.push(hc === 0 ? '✅ 无异常混杂' : `共 ${hc} 处`, '');
+
+        report.push(`## 汇总: Key=${ki}, 未翻译=${uc}, 混杂=${hc}`);
+        console.group('🔍 FilterBlade v5.9 诊断'); console.log(report.join('\n')); console.groupEnd();
+
+        const fn = `fb-diag-${new Date().toISOString().slice(0,19).replace(/[T:]/g,'-')}.txt`;
+        try {
+            const b = new Blob([report.join('\n')], {type:'text/plain;charset=utf-8'});
+            const u = URL.createObjectURL(b); const a = document.createElement('a');
+            a.href=u; a.download=fn; document.body.appendChild(a); a.click();
+            setTimeout(()=>{document.body.removeChild(a);URL.revokeObjectURL(u);},100);
+            alert(`✅ v5.9诊断\nKey=${ki} 未翻译=${uc} 混杂=${hc}\n${fn}`);
+        } catch(e) { alert(`✅ 诊断完成(F12查看)\nKey=${ki} 未翻译=${uc} 混杂=${hc}`); }
+    }
+    GM_registerMenuCommand('🔍 词典一致性自检', runSelfDiagnostic);
+
+    // ==================== 8. 反馈系统 ====================
+    let feedbackMode = false, feedbackOverlay = null;
+    let collectedFeedbacks = GM_getValue('fb_collected_feedbacks', []);
+    let feedbackShortcut = GM_getValue('fb_feedback_shortcut', 'Alt+F1');
+    let exportShortcut = GM_getValue('fb_export_shortcut', 'Alt+F3');
+
+    function parseShortcut(s) {
+        const p = s.trim().split('+').map(x=>x.trim().toLowerCase());
+        return { alt:p.includes('alt'), ctrl:p.includes('ctrl')||p.includes('control'),
+                 shift:p.includes('shift'), meta:p.includes('meta')||p.includes('cmd'),
+                 key:p.filter(x=>!['alt','ctrl','control','shift','meta','cmd','command'].includes(x))[0]||'' };
+    }
+    function matchesShortcut(e,s) {
+        const p=parseShortcut(s); if(!p.key) return false;
+        const km=e.key.toLowerCase()===p.key||e.code.toLowerCase()===p.key||e.code.toLowerCase()==='key'+p.key;
+        return km&&e.altKey===p.alt&&e.ctrlKey===p.ctrl&&e.shiftKey===p.shift&&e.metaKey===p.meta;
+    }
+    function gsd(k){return k||'(未设置)';}
+
+    function createFeedbackOverlay() {
+        if(feedbackOverlay) return;
+        feedbackOverlay=document.createElement('div');
+        Object.assign(feedbackOverlay.style,{position:'fixed',top:'0',left:'0',right:'0',background:'#ff9800',color:'#fff',padding:'8px 16px',fontSize:'14px',zIndex:'2147483647',textAlign:'center',cursor:'pointer',fontFamily:'sans-serif',display:'flex',justifyContent:'center',alignItems:'center',gap:'16px',boxShadow:'0 2px 8px rgba(0,0,0,0.3)'});
+        updateOverlayContent(); document.body.appendChild(feedbackOverlay);
+    }
+    function bindOverlayEvents() {
+        if(!feedbackOverlay) return;
+        feedbackOverlay.querySelector('#fb-export-btn')?.addEventListener('click',e=>{e.stopPropagation();exportFeedbacks();});
+        feedbackOverlay.querySelector('#fb-clear-btn')?.addEventListener('click',e=>{e.stopPropagation();if(confirm('清空所有反馈？')){collectedFeedbacks=[];GM_setValue('fb_collected_feedbacks',[]);updateOverlayCount();}});
+        feedbackOverlay.querySelector('#fb-close-btn')?.addEventListener('click',e=>{e.stopPropagation();toggleFeedbackMode();});
+    }
+    function updateOverlayContent() {
+        if(!feedbackOverlay) return;
+        feedbackOverlay.innerHTML=`<span>🔍 反馈模式 | ${gsd(feedbackShortcut)} 切换 · ${gsd(exportShortcut)} 导出</span><button id="fb-export-btn" style="background:#fff;color:#ff9800;border:none;padding:4px 12px;border-radius:4px;cursor:pointer;font-size:13px;font-weight:bold;">📥 导出(${collectedFeedbacks.length})</button><button id="fb-clear-btn" style="background:transparent;color:#fff;border:1px solid #fff;padding:4px 12px;border-radius:4px;cursor:pointer;font-size:13px;">🗑️ 清空</button><button id="fb-close-btn" style="background:transparent;color:#fff;border:1px solid #fff;padding:4px 12px;border-radius:4px;cursor:pointer;font-size:13px;">✕</button>`;
+        bindOverlayEvents();
+    }
+    function updateOverlayCount(){const b=feedbackOverlay?.querySelector('#fb-export-btn');if(b)b.textContent=`📥 导出(${collectedFeedbacks.length})`;}
+    function removeFeedbackOverlay(){if(feedbackOverlay){feedbackOverlay.remove();feedbackOverlay=null;}}
+    function toggleFeedbackMode(){feedbackMode=!feedbackMode;if(feedbackMode){createFeedbackOverlay();document.body.style.cursor='crosshair';}else{removeFeedbackOverlay();document.body.style.cursor='';}}
+    function exportFeedbacks() {
+        if(!collectedFeedbacks.length){alert('⚠️ 暂无反馈');return;}
+        const ts=new Date().toISOString().slice(0,19).replace(/[T:]/g,'-');
+        const fn=`fb-feedback-${ts}.txt`;
+        const c=`# FilterBlade 反馈\n# ${new Date().toLocaleString()}\n# ${collectedFeedbacks.length} 条\n\n`+collectedFeedbacks.map((f,i)=>`--- #${i+1} ---\n${f}`).join('\n\n');
+        try{const b=new Blob([c],{type:'text/plain;charset=utf-8'});const u=URL.createObjectURL(b);const a=document.createElement('a');a.href=u;a.download=fn;document.body.appendChild(a);a.click();setTimeout(()=>{document.body.removeChild(a);URL.revokeObjectURL(u);},100);}catch(e){navigator.clipboard.writeText(c).then(()=>alert(`已复制到剪贴板\n文件名: ${fn}`)).catch(()=>prompt('请手动复制:',c));}
+    }
+
+    document.addEventListener('keydown',e=>{
+        if(['INPUT','TEXTAREA','SELECT'].includes(e.target.tagName))return;
+        if(matchesShortcut(e,feedbackShortcut)){e.preventDefault();e.stopImmediatePropagation();toggleFeedbackMode();}
+        if(matchesShortcut(e,exportShortcut)){e.preventDefault();e.stopImmediatePropagation();exportFeedbacks();}
+    },true);
+
+    GM_registerMenuCommand(`🔍 反馈模式 (${gsd(feedbackShortcut)})`,toggleFeedbackMode);
+    GM_registerMenuCommand(`📥 快捷导出 (${gsd(exportShortcut)})`,exportFeedbacks);
+    GM_registerMenuCommand('⌨️ 自定义反馈键',()=>{const k=prompt(`当前: ${gsd(feedbackShortcut)}`,feedbackShortcut);if(k?.trim()){feedbackShortcut=k.trim();GM_setValue('fb_feedback_shortcut',feedbackShortcut);if(feedbackMode)updateOverlayContent();}});
+    GM_registerMenuCommand('⌨️ 自定义导出键',()=>{const k=prompt(`当前: ${gsd(exportShortcut)}`,exportShortcut);if(k?.trim()&&k.trim()!==feedbackShortcut){exportShortcut=k.trim();GM_setValue('fb_export_shortcut',exportShortcut);if(feedbackMode)updateOverlayContent();}});
+
+    document.addEventListener('click',e=>{
+        if(!feedbackMode||e.target===feedbackOverlay||feedbackOverlay?.contains(e.target))return;
+        e.preventDefault();e.stopPropagation();e.stopImmediatePropagation();
+        const t=e.target;
+        if(t.tagName==='A'){t.dataset.fbOrigHref=t.href;t.removeAttribute('href');setTimeout(()=>{if(t.dataset.fbOrigHref){t.href=t.dataset.fbOrigHref;delete t.dataset.fbOrigHref;}},100);}
+        const text=(t.textContent||'').trim();
+        if(!text||!/[a-zA-Z]/.test(text)){alert('⚠️ 无英文文本');return;}
+        const info=[`[原文] ${text}`,`[标签] <${t.tagName.toLowerCase()}>`,`[类名] ${t.className||'(无)'}`,`[路径] ${getElementPath(t)}`].join('\n');
+        collectedFeedbacks.push(info);GM_setValue('fb_collected_feedbacks',collectedFeedbacks);updateOverlayCount();
+        const ob=t.style.backgroundColor;t.style.backgroundColor='#4caf50';t.style.transition='background-color 0.3s';
+        setTimeout(()=>{t.style.backgroundColor=ob;},300);
+    },true);
+
+    function getElementPath(el){const p=[];let c=el,d=0;while(c&&c!==document.body&&d<5){let s=c.tagName.toLowerCase();if(c.id)s+=`#${c.id}`;else if(c.className&&typeof c.className==='string')s+=`.${c.className.split(/\s+/)[0]}`;p.unshift(s);c=c.parentElement;d++;}return p.join(' > ');}
+
+    // ==================== 9. 初始化 (v5.9: 去抖200ms) ====================
+    translateRoot(document.body);
+
+    let debounceTimer = null;
+    const pendingNodes = new Set();
+
+    function flushPendingNodes() {
+        for (const n of pendingNodes) {
+            if (!n.isConnected) continue;
+            if (n.nodeType === Node.ELEMENT_NODE) {
+                // v5.9: 对动态节点也执行选择器预翻译
+                applySelectorTranslations(n);
+                mergeAdjacentTextNodes(n);
+                n.querySelectorAll?.('*')?.forEach(el => mergeAdjacentTextNodes(el));
+                translateRoot(n);
+            } else if (n.nodeType === Node.TEXT_NODE) {
+                translateNode(n);
+            }
+        }
+        pendingNodes.clear();
+    }
+
+    new MutationObserver(mutations => {
+        for (const m of mutations) {
+            if (m.type === 'childList') {
+                m.addedNodes.forEach(n => pendingNodes.add(n));
+            } else if (m.type === 'characterData') {
+                pendingNodes.add(m.target);
+            }
+        }
+        // v5.9: 去抖 200ms，等待框架所有渲染批次完成
+        clearTimeout(debounceTimer);
+        debounceTimer = setTimeout(flushPendingNodes, 200);
+    }).observe(document.body, { childList: true, subtree: true, characterData: true });
+})();

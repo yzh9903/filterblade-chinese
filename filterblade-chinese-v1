@@ -1,0 +1,479 @@
+// ==UserScript==
+// @name         FilterBlade 中文汉化增强版 (上下文+自定义+反馈)
+// @namespace    http://tampermonkey.net/
+// @version      4.6
+// @description  动态汉化 FilterBlade，支持文本归一化、上下文感知与点击提取未翻译文本
+// @author       You
+// @match        https://www.filterblade.xyz/*
+// @grant        GM_getValue
+// @grant        GM_setValue
+// @grant        GM_registerMenuCommand
+// @run-at       document-idle
+// ==/UserScript==
+
+(function () {
+    'use strict';
+
+    // ==================== 1. 核心翻译词典（整句优先 + 词组兜底） ====================
+    const BASE_DICT = {
+        // --- 首页整句翻译（含已翻译片段兼容版） ---
+        'The base NeverSink filter is already solid. You can do a quick setup using the options above to adapt it to your build, style and progress in the game. If you want, you can further fine-tune it using the Customize tab.':
+            '基础 NeverSink 过滤器已非常完善。您可通过上方选项快速配置，使其适配您的BD、外观风格与游戏进度。如需进一步微调，可使用“自定义”标签页。',
+        'The base NeverSink filter is already solid. You can do a quick setup using the options above to adapt it to your build, style and progress in the game. If you want, you can further fine-tune it using the 自定义 tab.':
+            '基础 NeverSink 过滤器已非常完善。您可通过上方选项快速配置，使其适配您的BD、外观风格与游戏进度。如需进一步微调，可使用“自定义”标签页。',
+        'FilterBlade is an online editor for loot-filters for the games Path of Exile 1 and 2 based on NeverSink\'s filters.':
+            'FilterBlade 是一个基于 NeverSink 过滤器方案的在线编辑器，专为《流放之路》1代与2代的战利品过滤器设计。',
+        'By default, most items look the same, no matter how rare or useful or valuable.':
+            '默认情况下，大多数物品看起来都一样，无论其稀有度、实用性或价值如何。',
+        'A filter highlights items based on type and value (based on current inGame economy), and hides bad ones.':
+            '过滤器会根据类型和价值（基于当前游戏内经济）高亮显示有用物品，并隐藏无用物品。',
+        'You can customize them to fit to your character and style!':
+            '您可以自定义它们以适配您的角色和风格！',
+        'They are officially supported tools for Path of Exile!':
+            '它们是《流放之路》官方支持的工具！',
+        'Open the \'Auto-Adjust for Build\' and select your inGame character class, then apply and export the filter. That\'s it! For now...':
+            '打开“根据BD自动调整”，选择您的游戏内角色职业，然后应用并导出过滤器。就这么简单！目前……',
+        'You can come back later to fine-tune when you notice things that you\'d like to change!':
+            '当您发现需要调整的内容时，可以随时回来进行微调！',
+        'You\'re done? Head to the export screen to save the filter to your FilterBlade account and either download a filter-file or upload it directly into your PoE account.':
+            '完成了？前往导出页面，将过滤器保存到您的 FilterBlade 账户，可以下载过滤器文件或直接上传到您的 PoE 账户。',
+        'Login with your PoE account to save your filter during export. When you return to FilterBlade, you will see all your saved filters on the \'My Filters\' screen to continue editing!':
+            '使用您的 PoE 账户登录，以便在导出时保存过滤器。当您返回 FilterBlade 时，可以在“我的过滤器”页面查看所有已保存的过滤器并继续编辑！',
+        'FilterBlade will ALWAYS give you the newest up-to-date filter. You can customize a filter now and load it again later and automatically get an updated version when you export!':
+            'FilterBlade 始终为您提供最新的过滤器。您可以现在自定义过滤器，稍后重新加载，并在导出时自动获取更新版本！',
+        'Edit every part of the filter: Colors, tierlists, sounds in a sorted structure. Every edit done is automatically saved and instantly reflected in all other parts of the website: Customize':
+            '编辑过滤器的每个部分：颜色、分级列表、音效，均采用结构化排序。所有编辑都会自动保存，并即时反映在网站的所有其他部分：自定义',
+        'The Customizer is built fail-save and it\'s hard to \'break\' your filter by using it. You will see warnings if you\'re about to do something dangerous. There is also additional validation when exporting.':
+            '自定义器内置防错机制，很难因操作而“损坏”过滤器。当您即将执行危险操作时会看到警告。导出时还有额外的验证。',
+        'You can right-click e.g. an item to jump to its rule in the Customizer or a tierlist element to move it! (Long press on mobile)':
+            '您可以右键点击例如某个物品，跳转到自定义器中对应的规则，或点击分级列表元素来移动它！（移动端长按）',
+        'The Overview tab shows typical items with their current visuals and explanations of why they are special. Good to get an overview of the current filter and learn about its colors and highlights.':
+            '概览标签页展示典型物品的当前视觉效果及其特殊原因的说明。有助于全面了解当前过滤器，并了解其颜色和高亮规则。',
+        'Want to test your filter? Verify your results? Find out why an item inGame is highlighted? Check out our tools on the Simulate screen.':
+            '想测试您的过滤器？验证结果？想知道为什么游戏内某个物品被高亮？请查看模拟页面的工具。',
+        'Planning a big rework of colors, sizes and sounds? The \'Themes\' tab has a lot of tool for large-scale edits like that!':
+            '计划对颜色、大小和音效进行大规模调整？“主题”标签页提供了大量用于此类批量编辑的工具！',
+
+        // --- 新增缺失词条 ---
+        'Safely fine-tune the entire filter in detail.': '安全地详细微调整个过滤器。',
+        'Select how many items are shown.': '选择显示的物品数量。',
+        'Generate a filter specific to your inGame character!': '生成专属于您游戏角色的过滤器！',
+        'User-createdModules': '用户创建模块',
+        'User-created Modules': '用户创建模块',
+
+        // --- 导航与UI词组（兜底） ---
+        'Auto-Adjust for build': '根据BD自动调整',
+        'Auto-Adjustfor build': '根据BD自动调整',
+        'Semi-Strict': '半严格',
+        'Game mode: Softcore': '游戏模式: 软核',
+        'Game mode:Softcore': '游戏模式:软核',
+        'Default filter colors:': '默认过滤器颜色:',
+        'Default filter colors:普通': '默认过滤器颜色:普通',
+        'Customizefilter': '自定义过滤器',
+        '导出 filterto PoE': '导出过滤器到PoE',
+        '重置 filter设置': '重置过滤器设置',
+        '严格度:Semi-Strict': '严格度:半严格',
+        'Intro': '简介',
+        'How to use?': '如何使用？',
+        'Start': '开始', 'Overview': '概览', 'Customize': '自定义',
+        'Simulate': '模拟', 'Themes': '主题', 'Advanced': '高级',
+        'Home': '首页', 'Save': '保存', 'Load': '加载', 'Export': '导出',
+        'Import': '导入', 'Reset': '重置', 'Search': '搜索', 'Filter': '过滤器',
+        'Settings': '设置', 'About': '关于', 'Dark Mode': '深色模式',
+        'Light Mode': '浅色模式', 'Copy to Clipboard': '复制到剪贴板',
+        'Download': '下载', 'Delete': '删除', 'Edit': '编辑', 'Add': '添加',
+        'Cancel': '取消', 'Confirm': '确认', 'Yes': '是', 'No': '否',
+        'My filters': '我的过滤器', 'My Modules': '我的模块',
+        'Report an issue': '反馈问题', 'Get started!': '立即开始！',
+        'Add Rule': '添加规则', 'Add Group': '添加分组',
+        'Duplicate': '复制', 'Move Up': '上移', 'Move Down': '下移',
+        'Collapse All': '全部折叠', 'Expand All': '全部展开',
+        'Filter Logic': '过滤逻辑', 'Match All': '匹配全部', 'Match Any': '匹配任意',
+        'Drop Level': '掉落等级', 'Item Level': '物品等级', 'Area Level': '区域等级',
+        'Base Type': '基础类型', 'Item Class': '物品类别', 'Gem Level': '宝石等级',
+        'Map Tier': '地图阶级', 'Identified': '已鉴定', 'Unidentified': '未鉴定',
+        'Elder Item': '长老物品', 'Shaper Item': '塑界者物品',
+        'Crusader Item': '圣战者物品', 'Hunter Item': '狩猎者物品',
+        'Redeemer Item': '救赎者物品', 'Warlord Item': '总督军物品',
+        'Synthesised Item': '忆境物品', 'Fractured Item': '破裂物品',
+        'Influenced Item': '影响物品', 'Has Enchantment': '拥有附魔',
+        'Has Implicit Mod': '拥有基底词缀', 'Has Explicit Mod': '拥有显式词缀',
+        'Mod Value': '词缀数值', 'Text Color': '文字颜色',
+        'Background Color': '背景颜色', 'Border Color': '边框颜色',
+        'Play Sound': '播放音效', 'Disable Drop Sound': '禁用掉落音效',
+        'Beam Effect': '光柱效果', 'Advanced Tooltip': '高级提示框',
+        'Custom Text': '自定义文本', 'Always Show': '始终显示', 'Never Hide': '永不隐藏',
+        'Value:': '数值:', 'Operator:': '运算符:',
+        'Equals': '等于', 'Greater Than': '大于', 'Less Than': '小于',
+        'Contains': '包含', 'Not Equals': '不等于',
+        'AND': '且', 'OR': '或', 'NOT': '非',
+        'Strictness': '严格度', 'Loot Tier': '掉落等级',
+        'Base Types': '基础类型', 'Item Classes': '物品类别',
+        'Rarity': '稀有度', 'Normal': '普通', 'Magic': '魔法',
+        'Rare': '稀有', 'Unique': '传奇', 'Prophecy': '预言',
+        'Currency': '通货', 'Divination Card': '命运卡',
+        'Map': '地图', 'Gem': '宝石', 'Flask': '药水',
+        'Weapon': '武器', 'Armour': '护甲', 'Jewellery': '珠宝',
+        'Sockets': '插槽', 'Links': '连接', 'Quality': '品质',
+        'Level': '等级', 'Corrupted': '已腐化', 'Mirrored': '已复制',
+        'Elder': '长老', 'Shaper': '塑界者', 'Crusader': '圣战者',
+        'Hunter': '狩猎者', 'Redeemer': '救赎者', 'Warlord': '总督军',
+        'Synthesised': '忆境', 'Fractured': '破裂', 'Influenced': '影响',
+        'Show': '显示', 'Hide': '隐藏', 'Style': '样式',
+        'Color': '颜色', 'Size': '大小', 'Sound': '音效',
+        'Alert': '提醒', 'Minimap Icon': '小地图图标', 'Beam': '光柱',
+        'Rule': '规则', 'Condition': '条件', 'Action': '动作',
+        'Priority': '优先级', 'Enabled': '启用', 'Disabled': '禁用',
+        'League': '赛季', 'Standard': '标准', 'Hardcore': '专家',
+        'SSF': '独狼', 'Trade': '交易', 'Stash': '仓库',
+        'Chaos Orb': '混沌石', 'Exalted Orb': '崇高石',
+        'Divine Orb': '神圣石', 'Mirror of Kalandra': '卡兰德魔镜',
+        'Orb of Alchemy': '点金石', 'Orb of Chance': '机会石',
+        'Vaal Orb': '瓦尔宝珠', 'Blessed Orb': '祝福石',
+        'Regal Orb': '富豪石', 'Chromatic Orb': '幻色石',
+        'Jeweller\'s Orb': '工匠石', 'Orb of Fusing': '链接石',
+        'Scroll of Wisdom': '智慧卷轴', 'Portal Scroll': '传送卷轴',
+        'Armourer\'s Scrap': '护甲片', 'Blacksmith\'s Whetstone': '磨刀石',
+        'Glassblower\'s Bauble': '玻璃弹珠', 'Gemcutter\'s Prism': '宝石匠棱镜',
+        'Cartographer\'s Chisel': '制图钉', 'Engineer\'s Orb': '工程石',
+        'Infused Engineer\'s Orb': '灌注工程石',
+        'Turbulent Catalyst': '湍流催化剂', 'Imbued Catalyst': '注入催化剂',
+        'Abrasive Catalyst': '研磨催化剂', 'Tempering Catalyst': '回火催化剂',
+        'Fertile Catalyst': '肥沃催化剂', 'Prismatic Catalyst': '棱彩催化剂',
+        'Intrinsic Catalyst': '内在催化剂', 'Accelerating Catalyst': '加速催化剂',
+        'Unstable Catalyst': '不稳定催化剂',
+        'Tainted Chromatic Orb': '污染幻色石', 'Tainted Jeweller\'s Orb': '污染工匠石',
+        'Tainted Orb of Fusing': '污染链接石', 'Tainted Chaos Orb': '污染混沌石',
+        'Tainted Exalted Orb': '污染崇高石', 'Tainted Mythic Orb': '污染神话石',
+        'Tainted Armourer\'s Scrap': '污染护甲片', 'Tainted Blacksmith\'s Whetstone': '污染磨刀石',
+        'Tainted Divine Teardrop': '污染神圣泪滴', 'Veiled Orb': '隐匿宝珠',
+        'Orb of Dominance': '支配宝珠', 'Orb of Conflict': '冲突宝珠',
+        'Sacred Orb': '神圣宝珠', 'Stacked Deck': '叠牌',
+        'Wild Crystallised Lifeforce': '野生结晶生命之力',
+        'Vivid Crystallised Lifeforce': '鲜活结晶生命之力',
+        'Primal Crystallised Lifeforce': '原始结晶生命之力',
+        'Sacred Crystallised Lifeforce': '神圣结晶生命之力',
+        'Hinekora\'s Lock': '希妮科拉的锁扣', 'Reflecting Mist': '反射迷雾',
+        'Orb of Augmentation': '增幅石', 'Orb of Transmutation': '蜕变石',
+        'Orb of Alteration': '改造石', 'Regret Orb': '后悔石',
+        'Scouring Orb': '重铸石', 'Ancient Orb': '远古石',
+        'Annulment Orb': '剥离石', 'Exotic Coinage': '异域钱币',
+        'Distilled Emotion': '蒸馏情绪', 'Desecrated Veil': '亵渎面纱',
+        'Ritual Vessel': '仪式容器', 'Blood-filled Vessel': '注血容器',
+        'Ancestral Vision': '先祖视界', 'Omen': '预兆',
+        'Nameless Seer': '无名先知', 'Crescent Splinter': '新月碎片',
+        'Simulacrum Splinter': '幻像碎片', 'Splinter of Xoph': '索夫碎片',
+        'Splinter of Tul': '图尔碎片', 'Splinter of Esh': '艾许碎片',
+        'Splinter of Uul-Netol': '乌尔奈托碎片', 'Splinter of Chayula': '夏乌拉碎片',
+        'Blessing of Xoph': '索夫的祝福', 'Blessing of Tul': '图尔的祝福',
+        'Blessing of Esh': '艾许的祝福', 'Blessing of Uul-Netol': '乌尔奈托的祝福',
+        'Blessing of Chayula': '夏乌拉的祝福',
+        'Timeless Eternal Emblem': '永恒帝国徽章', 'Timeless Karui Emblem': '卡鲁徽章',
+        'Timeless Vaal Emblem': '瓦尔徽章', 'Timeless Templar Emblem': '圣堂武士徽章',
+        'Timeless Maraketh Emblem': '马拉克斯徽章', 'Maven\'s Writ': '贤主诏书',
+        'Writhing Invitation': '蠕动邀请函', 'Polaric Invitation': '极寒邀请函',
+        'Incandescent Invitation': '炽热邀请函', 'Screaming Invitation': '尖啸邀请函',
+        'Forbidden Tome': '禁忌典籍', 'Rogue\'s Marker': '盗贼标记',
+        'Contract': '契约', 'Blueprint': '蓝图',
+        'Trinket': '饰品', 'Heist Gear': '夺宝装备',
+        'Heist Cloak': '夺宝斗篷', 'Heist Brooch': '夺宝胸针', 'Heist Tool': '夺宝工具',
+        'Sentinel': '哨兵', 'Memory Line': '记忆线', 'Atlas Passive Skill': '天赋被动技能',
+        'Voidstone': '虚空石', 'Eldritch Ichor': '异界灵液',
+        'Lesser Eldritch Ember': '次级异界余烬', 'Greater Eldritch Ember': '高级异界余烬',
+        'Grand Eldritch Ember': '卓越异界余烬', 'Exceptional Eldritch Ember': '非凡异界余烬',
+        'Lesser Eldritch Ichor': '次级异界灵液', 'Greater Eldritch Ichor': '高级异界灵液',
+        'Grand Eldritch Ichor': '卓越异界灵液', 'Exceptional Eldritch Ichor': '非凡异界灵液',
+        'Orb of Annulment': '剥离石', 'Veiled Chaos Orb': '隐匿混沌石',
+        'Fracturing Orb': '碎裂宝珠', 'Awakener\'s Orb': '觉醒者之石',
+        'Tailoring Orb': '裁缝石', 'Specialisation Orb': '专精石',
+        'Magnificent Trinket': '华丽饰品', 'Ceremonial Trinket': '典礼饰品',
+        'Adorned Trinket': '装饰饰品', 'Foliate Trinket': '叶饰饰品',
+        'Gilded Trinket': '镀金饰品', 'Aureate Trinket': '金光饰品',
+        'Lustrous Trinket': '光泽饰品', 'Shining Trinket': '闪耀饰品',
+        'Bursting Trinket': '爆裂饰品', 'Radiant Trinket': '辉光饰品',
+        'Thaumaturgical Net': '奇术网', 'Necromancy Net': '死灵网',
+        'Entangling Net': '纠缠网', 'Reinforced Net': '强化网',
+        'Strongbox Key': '宝箱钥匙', 'Essence': '精华',
+        'Remnant of Corruption': '腐化残余', 'Fossil': '化石',
+        'Resonator': '共振器', 'Delve Socketable Currency': '深渊镶嵌通货',
+        'Enkindling Orb': '点燃宝珠', 'Instilling Orb': '灌输宝珠',
+        'Oil': '油', 'Anointing Recipe': '涂油配方', 'Scarab': '圣甲虫',
+        'Bestiary Orb': '兽猎宝珠', 'Imprinted Bestiary Orb': '印刻兽猎宝珠',
+        'Piece': '碎片', 'Set': '套装', 'Offering': '献祭', 'Vessel': '容器',
+        'Leaguestone': '赛季石', 'Relic': '遗产', 'Watchstone': '守望石',
+        'Maven\'s Beacon': '贤主信标', 'Atlas Region': '图鉴区域',
+        'Master Mission': '大师任务', 'Zana': '扎娜', 'Einhar': '艾因哈尔',
+        'Alva': '阿尔瓦', 'Niko': '尼可', 'Jun': '琼', 'Cassia': '卡西娅',
+        'Veritania': '维里塔尼亚', 'Drox': '德罗克斯', 'Baran': '巴兰',
+        'Al-Hezmin': '阿尔赫兹明', 'Kirac': '基拉克', 'Sister Cassia': '修女卡西娅',
+        'Oshabi': '奥沙比', 'The Maven': '贤主', 'The Searing Exarch': '灼烙总督',
+        'The Eater of Worlds': '吞噬天地', 'Archnemesis': '宿敌', 'Sentinels': '哨兵',
+        'Lake of Kalandra': '卡兰德湖', 'Sanctum': '圣所', 'Crucible': '熔炉',
+        'Affliction': '灾厄', 'Necropolis': '亡灵之城', 'Settlers of Kalguur': '卡鲁拓荒者',
+        'Runes': '符文', 'Kalandran Trade': '卡兰德交易', 'Township': '城镇',
+        'Shipping': '航运', 'Disenchanting': '分解', 'Refining': '精炼',
+        'Smelting': '冶炼', 'Crafting Bench': '工艺台', 'Harvest': '丰收',
+        'Blight': '枯疫', 'Metamorph': '蜕变', 'Delirium': '谵妄',
+        'Ritual': '仪式', 'Expedition': '远征', 'Hellscape': '炼狱',
+        'Archnemesis League': '宿敌赛季', 'Sentinel League': '哨兵赛季',
+        'Lake of Kalandra League': '卡兰德湖赛季', 'Sanctum League': '圣所赛季',
+        'Crucible League': '熔炉赛季', 'Affliction League': '灾厄赛季',
+        'Necropolis League': '亡灵之城赛季', 'Settlers of Kalguur League': '卡鲁拓荒者赛季'
+    };
+
+    // ==================== 2. 上下文规则引擎 ====================
+    const CONTEXT_RULES = [
+        { word: 'Map', rules: [
+            { selector: '.atlas-panel, .map-tier-selector, [class*="map"]', translation: '地图' },
+            { selector: '.mapping-config, .data-bind-panel, [class*="mapping"]', translation: '映射' },
+            { selector: '.filter-rule, .loot-filter-editor', translation: '地图' }
+        ], fallback: '地图' },
+        { word: 'Style', rules: [
+            { selector: '.visual-style-picker, .appearance-panel', translation: '外观样式' },
+            { selector: '.code-editor, .syntax-highlight', translation: '代码风格' },
+            { selector: '.filter-style-config', translation: '过滤器样式' }
+        ], fallback: '样式' },
+        { word: 'Rule', rules: [
+            { selector: '.filter-rule-list, .loot-rule-editor', translation: '过滤规则' },
+            { selector: '.grammar-section, .syntax-docs', translation: '语法规则' }
+        ], fallback: '规则' },
+        { word: 'Set', rules: [
+            { selector: '.item-set, .equipment-set', translation: '套装' },
+            { selector: '.set-operation, .collection-panel', translation: '集合' },
+            { selector: 'button, .action-btn', translation: '设定' }
+        ], fallback: '套装' },
+        { word: 'Craft', rules: [
+            { selector: '.crafting-bench, .craft-simulator', translation: '工艺制作' },
+            { selector: '.harvest-craft, .craft-option', translation: '锻造' }
+        ], fallback: '工艺' },
+        { word: 'Level', rules: [
+            { selector: '.gem-level-input, [class*="gemLevel"]', translation: '宝石等级' },
+            { selector: '.drop-level-input, [class*="dropLevel"]', translation: '掉落等级' },
+            { selector: '.item-level-input, [class*="itemLevel"]', translation: '物品等级' },
+            { selector: '.area-level-input, [class*="areaLevel"]', translation: '区域等级' }
+        ], fallback: '等级' },
+        { word: 'Type', rules: [
+            { selector: '.base-type-selector, [class*="baseType"]', translation: '基础类型' },
+            { selector: '.item-class-selector, [class*="itemClass"]', translation: '物品类别' }
+        ], fallback: '类型' },
+        { word: 'Color', rules: [
+            { selector: '.text-color-picker, [class*="textColor"]', translation: '文字颜色' },
+            { selector: '.bg-color-picker, [class*="backgroundColor"], [class*="bgColor"]', translation: '背景颜色' },
+            { selector: '.border-color-picker, [class*="borderColor"]', translation: '边框颜色' }
+        ], fallback: '颜色' },
+        { word: 'Sound', rules: [
+            { selector: '.sound-picker, [class*="soundSelect"]', translation: '播放音效' },
+            { selector: '.disable-sound-toggle, [class*="disableSound"]', translation: '禁用掉落音效' }
+        ], fallback: '音效' }
+    ];
+
+    // ==================== 3. 用户自定义词典支持 ====================
+    let userDict = {};
+    try { userDict = GM_getValue('filterblade_user_dict', {}); } catch (e) {}
+
+    GM_registerMenuCommand('📝 编辑自定义词典', () => {
+        const input = prompt(
+            '请输入自定义翻译（JSON格式）:\n例: {"New Word": "新词翻译"}',
+            JSON.stringify(userDict)
+        );
+        if (input !== null) {
+            try {
+                const parsed = JSON.parse(input);
+                GM_setValue('filterblade_user_dict', parsed);
+                alert('✅ 自定义词典已保存，刷新页面生效');
+                location.reload();
+            } catch (e) { alert('❌ JSON格式错误: ' + e.message); }
+        }
+    });
+
+    // ==================== 4. 文本归一化工具（核心修复） ====================
+    function normalizeText(text) {
+        return text
+            .replace(/[\u200B-\u200D\uFEFF]/g, '')       // 移除零宽字符
+            .replace(/\u00A0/g, ' ')                      // 不间断空格 → 普通空格
+            .replace(/[\r\n\t]+/g, ' ')                   // 换行/制表符 → 空格
+            .replace(/\s{2,}/g, ' ')                      // 多空格合并
+            .trim();
+    }
+
+    // 构建归一化后的词典映射（避免每次翻译都重复归一化）
+    const NORMALIZED_DICT = {};
+    const ORIGINAL_KEYS = {};
+    for (const [key, value] of Object.entries(BASE_DICT)) {
+        const nk = normalizeText(key);
+        NORMALIZED_DICT[nk] = value;
+        ORIGINAL_KEYS[nk] = key;
+    }
+    // 合并用户词典
+    for (const [key, value] of Object.entries(userDict)) {
+        const nk = normalizeText(key);
+        NORMALIZED_DICT[nk] = value;
+        ORIGINAL_KEYS[nk] = key;
+    }
+    const SORTED_NORMALIZED_KEYS = Object.keys(NORMALIZED_DICT).sort((a, b) => b.length - a.length);
+
+    const TRANSLATED_ATTR = 'data-fb-translated';
+
+    function getContextTranslation(normalizedText, element) {
+        const rule = CONTEXT_RULES.find(r => r.word === normalizedText);
+        if (!rule || !element) return null;
+        for (const r of rule.rules) {
+            if (element.closest(r.selector)) return r.translation;
+        }
+        return rule.fallback;
+    }
+
+    function translateNode(node) {
+        if (node.nodeType !== Node.TEXT_NODE) return;
+        const parent = node.parentElement;
+        if (!parent) return;
+        if (parent.hasAttribute(TRANSLATED_ATTR)) return;
+        if (['SCRIPT', 'STYLE', 'TEXTAREA', 'INPUT'].includes(parent.tagName)) return;
+
+        const rawText = node.textContent;
+        const normalized = normalizeText(rawText);
+        if (!normalized) return;
+
+        let text = normalized;
+        let changed = false;
+
+        for (const key of SORTED_NORMALIZED_KEYS) {
+            if (!text.includes(key)) continue;
+            const ctxTrans = getContextTranslation(key, parent);
+            const replacement = ctxTrans || NORMALIZED_DICT[key];
+            if (replacement && text.includes(key)) {
+                text = text.split(key).join(replacement);
+                changed = true;
+            }
+        }
+
+        if (changed) {
+            node.textContent = text;
+            parent.setAttribute(TRANSLATED_ATTR, '1');
+        }
+    }
+
+    function translateRoot(root) {
+        const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null, false);
+        const nodes = [];
+        while (walker.nextNode()) nodes.push(walker.currentNode);
+        nodes.forEach(translateNode);
+    }
+
+    // ==================== 5. 点击提取未翻译文本功能 ====================
+    let feedbackMode = false;
+    let feedbackOverlay = null;
+
+    function createFeedbackOverlay() {
+        if (feedbackOverlay) return;
+        feedbackOverlay = document.createElement('div');
+        Object.assign(feedbackOverlay.style, {
+            position: 'fixed', top: '0', left: '0', right: '0',
+            background: '#ff9800', color: '#fff', padding: '8px 16px',
+            fontSize: '14px', zIndex: '999999', textAlign: 'center',
+            cursor: 'pointer', fontFamily: 'sans-serif'
+        });
+        feedbackOverlay.textContent = '🔍 反馈模式已开启 | 点击任意未翻译文本提取信息 | 再次点击此栏关闭';
+        feedbackOverlay.addEventListener('click', toggleFeedbackMode);
+        document.body.appendChild(feedbackOverlay);
+    }
+
+    function removeFeedbackOverlay() {
+        if (feedbackOverlay) { feedbackOverlay.remove(); feedbackOverlay = null; }
+    }
+
+    function toggleFeedbackMode() {
+        feedbackMode = !feedbackMode;
+        if (feedbackMode) {
+            createFeedbackOverlay();
+            document.body.style.cursor = 'crosshair';
+        } else {
+            removeFeedbackOverlay();
+            document.body.style.cursor = '';
+        }
+    }
+
+    GM_registerMenuCommand('🔍 切换未翻译文本提取模式', toggleFeedbackMode);
+
+    document.addEventListener('click', (e) => {
+        if (!feedbackMode) return;
+        if (e.target === feedbackOverlay) return;
+
+        e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation();
+
+        const target = e.target;
+        if (target.tagName === 'A') {
+            target.dataset.fbOriginalHref = target.href;
+            target.removeAttribute('href');
+            setTimeout(() => {
+                if (target.dataset.fbOriginalHref) {
+                    target.href = target.dataset.fbOriginalHref;
+                    delete target.dataset.fbOriginalHref;
+                }
+            }, 100);
+        }
+
+        const text = (target.textContent || '').trim();
+        if (!text || !/[a-zA-Z]/.test(text)) {
+            alert('⚠️ 该位置未检测到英文文本');
+            return;
+        }
+
+        const info = [
+            `[原文] ${text}`,
+            `[标签] <${target.tagName.toLowerCase()}>`,
+            `[类名] ${target.className || '(无)'}`,
+            `[父级] <${target.parentElement?.tagName.toLowerCase()}> .${target.parentElement?.className || '(无)'}`,
+            `[路径] ${getElementPath(target)}`
+        ].join('\n');
+
+        navigator.clipboard.writeText(info).then(() => {
+            alert(`✅ 已复制到剪贴板:\n\n${info}`);
+        }).catch(() => {
+            const ta = document.createElement('textarea');
+            ta.value = info;
+            document.body.appendChild(ta);
+            ta.select();
+            document.execCommand('copy');
+            ta.remove();
+            alert(`✅ 已复制到剪贴板:\n\n${info}`);
+        });
+    }, true);
+
+    function getElementPath(el) {
+        const parts = [];
+        let current = el;
+        let depth = 0;
+        while (current && current !== document.body && depth < 5) {
+            let desc = current.tagName.toLowerCase();
+            if (current.id) desc += `#${current.id}`;
+            else if (current.className && typeof current.className === 'string') {
+                desc += `.${current.className.split(/\s+/)[0]}`;
+            }
+            parts.unshift(desc);
+            current = current.parentElement;
+            depth++;
+        }
+        return parts.join(' > ');
+    }
+
+    // ==================== 6. 初始化与动态监听 ====================
+    translateRoot(document.body);
+
+    const observer = new MutationObserver(mutations => {
+        for (const mutation of mutations) {
+            if (mutation.type === 'childList') {
+                mutation.addedNodes.forEach(node => {
+                    if (node.nodeType === Node.ELEMENT_NODE) translateRoot(node);
+                    else if (node.nodeType === Node.TEXT_NODE) translateNode(node);
+                });
+            } else if (mutation.type === 'characterData') {
+                translateNode(mutation.target);
+            }
+        }
+    });
+
+    observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+})();

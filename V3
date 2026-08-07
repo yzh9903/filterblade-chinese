@@ -1,0 +1,874 @@
+// ==UserScript==
+// @name         FilterBlade 中文汉化增强版 (v7.0.1 增量补全)
+// @namespace    http://tampermonkey.net/
+// @version      7.0.1
+// @description  v7.0.1: 基于v7.0框架增量补全804处未翻译+38处混杂修复，框架零改动
+// @author       You
+// @match        https://www.filterblade.xyz/*
+// @grant        GM_getValue
+// @grant        GM_setValue
+// @grant        GM_registerMenuCommand
+// @run-at       document-idle
+// ==/UserScript==
+
+(function () {
+    'use strict';
+
+    // ==================== 0. 快捷键系统 (v7.0 原样保留) ====================
+    const DEFAULT_SHORTCUTS = {
+        'toggleFeedback': { key: 'F9', desc: '切换反馈模式' },
+        'runDiagnostic': { key: 'F10', desc: '运行诊断自检' },
+        'openCustomDict': { key: 'F11', desc: '编辑自定义词典' },
+        'quickSave': { key: 'Ctrl+S', desc: '快速保存(触发页面保存)' },
+        'focusSearch': { key: '/', desc: '聚焦搜索框' }
+    };
+
+    let userShortcuts = {};
+    try { userShortcuts = GM_getValue('fb_user_shortcuts', {}); } catch (e) {}
+    const ACTIVE_SHORTCUTS = { ...DEFAULT_SHORTCUTS, ...userShortcuts };
+
+    function registerShortcutPanel() {
+        GM_registerMenuCommand('⌨️ 自定义快捷键', () => {
+            const current = JSON.stringify(ACTIVE_SHORTCUTS, null, 2);
+            const input = prompt(
+                '自定义快捷键配置 (JSON格式)\n支持: Ctrl, Shift, Alt + 字母/数字/F键\n例: {"toggleFeedback": {"key":"F9","desc":"切换反馈模式"}}',
+                current
+            );
+            if (input !== null) {
+                try {
+                    const parsed = JSON.parse(input);
+                    GM_setValue('fb_user_shortcuts', parsed);
+                    alert('✅ 快捷键已保存，刷新生效');
+                    location.reload();
+                } catch (e) { alert('❌ JSON格式错误: ' + e.message); }
+            }
+        });
+    }
+
+    function bindShortcuts() {
+        document.addEventListener('keydown', (e) => {
+            const tag = e.target.tagName;
+            if (['INPUT', 'TEXTAREA', 'SELECT'].includes(tag)) return;
+            const mods = [];
+            if (e.ctrlKey) mods.push('Ctrl');
+            if (e.shiftKey) mods.push('Shift');
+            if (e.altKey) mods.push('Alt');
+            const keyName = e.key.length === 1 ? e.key.toUpperCase() : e.key;
+            const combo = [...mods, keyName].join('+');
+            for (const [action, cfg] of Object.entries(ACTIVE_SHORTCUTS)) {
+                if (cfg.key && cfg.key.toUpperCase() === combo.toUpperCase()) {
+                    e.preventDefault(); e.stopPropagation();
+                    switch (action) {
+                        case 'toggleFeedback': toggleFeedbackMode(); break;
+                        case 'runDiagnostic': runSelfDiagnostic(); break;
+                        case 'openCustomDict':
+                            document.querySelector('[data-fb-menu="customDict"]')?.click(); break;
+                        case 'quickSave':
+                            document.querySelector('.saveBtn, [class*="save"]')?.click(); break;
+                        case 'focusSearch':
+                            document.querySelector('input[type="search"], .searchInput, #searchBar')?.focus(); break;
+                    }
+                    console.log(`[FB] 快捷键触发: ${combo} -> ${action}`);
+                    return;
+                }
+            }
+        }, true);
+    }
+
+    // ==================== 1. 全局白名单 (v7.0 基础 + v7.0.1 增量) ====================
+    const WHITELIST_WORDS = new Set([
+        // --- v7.0 原有白名单 ---
+        'filter', 'filterblade', 'neversink', 'poe', 'pathofexile', 'poe1', 'poe2',
+        'github', 'adblock', 'javascript', 'discord', 'beta', 'patreon',
+        'twitter', 'youtube', 'twitch', 'facebook', 'instagram', 'reddit', 'tiktok',
+        'zoey', 'eleni', 'mochimm', 'haggis', 'alwaysfloat',
+        'grinding', 'gear', 'games', 'gmail', 'filterbladecontact', 'com',
+        'modules', 'module', 'php', 'css', 'html', 'json', 'xml', 'api',
+        'savefile', 'option-file', 'zip', 'ingame', 'pc', 'savestate', 'backup',
+        'divine', 'exalted', 'chaos', 'orb', 'orbs', 'star', 'red', 'beam',
+        'id', 'entry', 'stats', 'shift', 'click', 'right-click',
+        'allflame', 'curse', 'scarabs', 'fragments', 'splinters', 'tinctures',
+        'blue', 'green', 'brown', 'white', 'black', 'yellow', 'orange', 'purple',
+        'cyan', 'grey', 'gray', 'pink', 'large', 'medium', 'small',
+        'stefan', 'naive', 'tiering', 'stacked', 'uniform', 'adjusted',
+        'compact', 'locked', 'locks', 'tiers', 'prices', 'disabled',
+        'general', 'advanced', 'toolbar', 'strategy', 'visuals', 'sounds',
+        'thresholds', 'currency', 'drag', 'drop', 'configure', 'main',
+        'text', 'border', 'bg', 'positional', 'custom', 'manage', 'copy', 'paste',
+        'maven', 'npcs', 'streamers', 'community', 'theme',
+        'crusader', 'foulborn', 'hunter', 'redeemer', 'shaper', 'warlord', 'elder',
+        'eldritch', 'veiled', 'tainted', 'mid', 'basic', 'reduced', 'hidden',
+        'starting', 'with', 'highlight', 'on', 'new', 'no', 'alchemy', 'blessed',
+        'fusing', 'immense', 'power', 'regal', 'vaal', 'mirror', 'kalandra',
+        // --- v7.0.1 增量: 主播名/音效ID/形状/标签白名单 ---
+        'asuzara', 'bexbloopers', 'brittleknee', 'chistor', 'ghazzytv', 'golaya',
+        'gollum', 'holly', 'itsyoji', 'kermit', 'lolcohol', 'mathil', 'slipperyjim',
+        'gilbertamie', 'veskara', 'zizaran', 'circle', 'square', 'triangle',
+        'diamond', 'hexagon', 'cross', 'plus', 'minus', 'dot',
+        'volume', 'active', 'placeholder', 'metallic', 'default', 'sound', 'effect',
+        'valuable', 'uniques', 'maps', 'high', 'very', 'chancing', 'leveling',
+        'map', 'icon', 'shape', 'enabled', 'item', 'keep', 'such', 'as', 'when',
+        'vulgarity', 'chisel', 'divination', 'avarice', 'proliferation', 'procurement',
+        'empty', 'rule', 'npc'
+    ]);
+
+    // ==================== 2. 文本预处理 (v7.0 原样保留) ====================
+    const STICKY_FIXES = [
+        [/Auto-Adjustfor\b/g, 'Auto-Adjust for'],
+        [/filterto\b/g, 'filter to'],
+        [/gamesPath\b/g, 'games Path'],
+        [/screento\b/g, 'screen to'],
+        [/filtersfor\b/g, 'filters for'],
+        [/soundsin\b/g, 'sounds in'],
+        [/editslike\b/g, 'edits like'],
+        [/toolfor\b/g, 'tool for'],
+        [/User-createdModules\b/g, 'User-created Modules'],
+        [/Up-\s+or\s+/gi, 'Up- or '],
+        [/import\s+to\b/gi, 'import to'],
+        [/Test\s+Local\b/gi, 'Test Local'],
+        [/customizer and \s*$/g, 'customizer and'],
+        [/on your PC\s*$/g, 'on your PC'],
+        [/过滤器Blade/g, 'FilterBlade'],
+        [/导出\s*filterto/g, '导出 filter to'],
+        [/编辑\s*every/g, '编辑 every'],
+        [/自定义\s*tab/g, '自定义 tab'],
+        [/概览\s*tab/g, '概览 tab'],
+        [/模拟\s*screen/g, '模拟 screen'],
+        [/主题\s*tab/g, '主题 tab'],
+        [/赛季-specific/g, '赛季 specific'],
+        [/通货\s*&/g, '通货 &'],
+        [/Crusader's/g, "Crusader's "],
+        [/Foulborn\s+/g, 'Foulborn '],
+        [/Hunter's/g, "Hunter's "],
+        [/Redeemer's/g, "Redeemer's "],
+        [/Shaper's/g, "Shaper's "],
+        [/Warlord's/g, "Warlord's "],
+        [/Elder's/g, "Elder's "],
+        [/Mid\s*Tier/g, 'Mid Tier'],
+        [/Basic\s*Tier/g, 'Basic Tier'],
+        [/Reduced\s*highlight/g, 'Reduced highlight'],
+        [/Hidden\s*starting/g, 'Hidden starting']
+    ];
+
+    function normalizeText(text) {
+        let t = text.replace(/[\u200B-\u200D\uFEFF]/g, '').replace(/\u00A0/g, ' ')
+            .replace(/[\r\n\t]+/g, ' ').replace(/\u2019/g, "'").replace(/\u2018/g, "'")
+            .replace(/\s{2,}/g, ' ').trim();
+        for (const [p, rep] of STICKY_FIXES) t = t.replace(p, rep);
+        return t;
+    }
+
+    function stripToAlnum(text) { return text.replace(/[^a-zA-Z0-9]/g, '').toLowerCase(); }
+    function isWhitelistedOnly(text) {
+        const words = text.toLowerCase().match(/[a-z0-9]+/g) || [];
+        return words.length > 0 && words.every(w => WHITELIST_WORDS.has(w));
+    }
+
+    // ==================== 3. 核心翻译词典 (v7.0 原有 + v7.0.1 增量) ====================
+    const BASE_DICT = {
+        // ========== v7.0.1 增量: 主播音效名 ==========
+        'Asuzara': 'Asuzara (主播)',
+        'BexBloopers': 'BexBloopers (主播)',
+        'Brittleknee': 'Brittleknee (主播)',
+        'Chistor': 'Chistor (主播)',
+        'GhazzyTV': 'GhazzyTV (主播)',
+        'Golaya': 'Golaya (主播)',
+        'Gollum (Zizaran)': 'Gollum (Zizaran)',
+        'Holly': 'Holly (主播)',
+        'ItsYoji': 'ItsYoji (主播)',
+        'Kermit (Zizaran)': 'Kermit (Zizaran)',
+        'Lolcohol': 'Lolcohol (主播)',
+        'Mathil': 'Mathil (主播)',
+        'Mathil-vulgarity': 'Mathil-粗口版',
+        'SlipperyJim': 'SlipperyJim (主播)',
+        'Gilbertamie': 'Gilbertamie (主播)',
+        'Veskara': 'Veskara (主播)',
+        'Zizaran': 'Zizaran (主播)',
+
+        // ========== v7.0.1 增量: 音效等级选项 ==========
+        '1 - May be valuable': '1 - 可能有价值',
+        '3 - Uniques': '3 - 传奇物品',
+        '4 - Maps': '4 - 地图',
+        '5 - High maps': '5 - 高级地图',
+        '6 - Very valuable': '6 - 非常高价值',
+        '7 - Chancing': '7 - 点化底材',
+        '12 - Leveling': '12 - 升级装备',
+        'Placeholder': '占位符',
+
+        // ========== v7.0.1 增量: 外观/音量/图标标签 ==========
+        'Volume: 300': '音量: 300',
+        'When enabled, the item will keep the default sound effect (such as a metallic noise).':
+            '启用后，物品将保留默认音效（如金属声）。',
+        'Map Icon:': '地图图标:',
+        'Active': '激活',
+        'Shape: Circle': '形状: 圆形',
+        'Shape: Square': '形状: 方形',
+        'Shape: Triangle': '形状: 三角形',
+        'Shape: Diamond': '形状: 菱形',
+        'Shape: Hexagon': '形状: 六边形',
+        'Shape: Star': '形状: 星形',
+        'Shape: Cross': '形状: 十字形',
+
+        // ========== v7.0.1 增量: 贤主凿子系列 ==========
+        "Maven's Chisel of Divination": '贤主的占卜之凿',
+        "Maven's Chisel of Avarice": '贤主的贪婪之凿',
+        "Maven's Chisel of Proliferation": '贤主的增殖之凿',
+        "Maven's Chisel of Scarabs": '贤主的圣甲虫之凿',
+        "Maven's Chisel of Procurement": '贤主的获取之凿',
+
+        // ========== v7.0.1 增量: Tier编号补全 & 混杂修复 ==========
+        'Currency Basic Tier 3': '通货基础等级 3',
+        'Currency Basic Tier 4': '通货基础等级 4',
+        'Currency Mid Tier 3': '通货中等级 3',
+        'Currency Mid Tier 4': '通货中等级 4',
+        'Rule empty': '规则为空',
+        'Game & NPCs': '游戏与NPC音效',
+
+        // ========== v7.0 原有词典 (完整保留) ==========
+        'Rename rule': '重命名规则',
+        '• Appearance': '• 外观',
+        'Text': '文字',
+        'Border': '边框',
+        'BG': '背景',
+        'theme: custom': '主题: 自定义',
+        'Copy': '复制',
+        'Paste': '粘贴',
+        'Positional': '位置音效',
+        'Custom': '自定义',
+        'Game & Community Sounds': '游戏与社区音效',
+        '10 (new)': '10 (新)',
+        '11 (new)': '11 (新)',
+        '12 (new)': '12 (新)',
+        '13 (new)': '13 (新)',
+        '14 (new)': '14 (新)',
+        '15 (new)': '15 (新)',
+        '16 (new)': '16 (新)',
+        '17 - Orb of Alchemy': '17 - 点金石',
+        '18 - Blessed Orb': '18 - 祝福石',
+        '20 - Orb of Fusing': '20 - 链接石',
+        '21 - Orb of immense power': '21 - 无尽之力石',
+        '22 - Regal Orb': '22 - 帝王石',
+        '23 - Vaal Orb': '23 - 瓦尔宝珠',
+        '26 - Mirror of Kalandra': '26 - 卡兰德魔镜',
+        '-- no custom sounds --': '-- 无自定义音效 --',
+        'Manage': '管理',
+        'Maven': '贤主',
+        'Community & Streamers': '社区与主播',
+        "Crusader's Exalted Orb": '十字军崇高石',
+        'Foulborn Exalted Orb': '秽生崇高石',
+        "Hunter's Exalted Orb": '狩猎者崇高石',
+        "Redeemer's Exalted Orb": '救赎者崇高石',
+        "Shaper's Exalted Orb": '塑界者崇高石',
+        'Tainted Exalted Orb': '污染崇高石',
+        'Veiled Exalted Orb': '隐匿崇高石',
+        "Warlord's Exalted Orb": '战争领主崇高石',
+        "Elder's Exalted Orb": '长老崇高石',
+        'Eldritch Chaos Orb': '超凡混沌石',
+        'Veiled Chaos Orb': '隐匿混沌石',
+        'Eldritch Exalted Orb': '超凡崇高石',
+        'Tainted Chaos Orb': '污染混沌石',
+        'Currency Mid Tier 1': '通货中等级 1',
+        'Currency Mid Tier 2': '通货中等级 2',
+        'Reduced highlight on Semi-Strict': '半严格模式下降低高亮',
+        'Hidden starting with Semi-Strict': '半严格模式起隐藏',
+        'Currency Basic Tier 1': '通货基础等级 1',
+        'Currency Basic Tier 2': '通货基础等级 2',
+        'changes': '更改',
+        'Main': '主要',
+        'Stacked Tiering Mode': '堆叠分级模式',
+        'Default': '默认',
+        "Uses NeverSink's default tiering system for stacked currencies. You have the option to override it below.":
+            '使用 NeverSink 默认的堆叠通货分级系统。您可以在下方选择覆盖它。',
+        'Adjusted': '已调整',
+        'Uniform': '统一',
+        'Applies no special treatment to stacked currencies. Stacked currency items will be treated as individual items.':
+            '不对堆叠通货做特殊处理。堆叠通货物品将被视为单独物品。',
+        'Add tier': '添加等级',
+        'Filter items by tags or class': '按标签或类别筛选物品',
+        'UI-Filter': 'UI过滤',
+        'Include or Exclude items in the UI ONLY (Does not affect inGame filtering, but helps with organization)':
+            '仅在UI中包含或排除物品（不影响游戏内过滤，但有助于整理）',
+        'Highlight items based on their current inGame market price (use configure button to adjust thresholds)':
+            '根据当前游戏内市场价格高亮物品（使用配置按钮调整阈值）',
+        'Naive Price Sort': '基础价格排序',
+        'MASSIVE WARNING:': '重要警告:',
+        "This tierlists is already based on the ingame economy and is tiered using a BETTER algorithm than naive price sort. Only use this if you know what you're doing!":
+            '此分级列表已基于游戏内经济数据，并使用比基础价格排序更优的算法进行分级。仅在您清楚操作后果时使用！',
+        'Sorts all items into tiers based on their naive inGame market price (use configure button to adjust)':
+            '根据基础游戏内市场价格将所有物品分级（使用配置按钮调整）',
+        'Configure': '配置',
+        'Adjust the sorting and highlighting functions.': '调整排序和高亮功能。',
+        'Locked items will stay in their current tier and will not be moved by filter updates.':
+            '锁定的物品将保持在当前等级，不会因 filter 更新而移动。',
+        'Lock all': '全部锁定',
+        'Locks all items in all tiers. Locked items will stay in their current tier and will not be moved by filter updates.':
+            '锁定所有等级中的所有物品。锁定的物品将保持在当前等级，不会因 filter 更新而移动。',
+        'Compact': '紧凑',
+        "Path of Exile rewards speed. It's an efficient strategy to save time by picking up only valuable items.":
+            '《流放之路》奖励速度。只拾取有价值物品是节省时间的高效策略。',
+        "You can use the 'Stacked Tiering Mode' above to automate behaviour for stacked items.":
+            '您可以使用上方的"堆叠分级模式"来自动化堆叠物品的行为。',
+        "This list is already economy-updated if you're using the SC/HC base filter!":
+            '如果您使用的是软核/专家基础 filter，此列表已根据经济数据更新！',
+        'Remember that there are special rules for currency during the campaign and for specific leagues.':
+            '请记住，剧情阶段和特定赛季的通货有特殊规则。',
+        'DRAG & DROP items to change the tier. Add new tiers at the bottom or in the toolbar.':
+            '拖放物品以更改等级。在底部或工具栏中添加新等级。',
+        'S Tier': 'S级',
+        'Customize currency thresholds and visuals to tailor the filter to your preferences!':
+            '自定义通货阈值和视觉效果，使 filter 完全适配您的偏好！',
+        'General Currency': '通用通货',
+        'Show advanced toolbar': '显示高级工具栏',
+        'Show prices': '显示价格',
+        'Show Locks': '显示锁定',
+        'Reset tiers': '重置等级',
+        'Currency Strategy': '通货策略',
+        'Edit visuals and sounds': '编辑视觉和音效',
+        'Rule disabled.': '规则已禁用。',
+        'God Tier': '神级',
+        'Stefan Gold': '斯特凡金币',
+        'Size: 0 (large)': '大小: 0 (大)',
+        'Size: 1 (medium)': '大小: 1 (中)',
+        'Size: 2 (small)': '大小: 2 (小)',
+        'Color: Blue': '颜色: 蓝色',
+        'Color: Green': '颜色: 绿色',
+        'Color: Brown': '颜色: 棕色',
+        'Color: White': '颜色: 白色',
+        'Color: Red': '颜色: 红色',
+        'Color: Yellow': '颜色: 黄色',
+        'Color: Orange': '颜色: 橙色',
+        'Color: Purple': '颜色: 紫色',
+        'Color: Cyan': '颜色: 青色',
+        'Color: Black': '颜色: 黑色',
+        'Color: Grey': '颜色: 灰色',
+        'Color: Pink': '颜色: 粉色',
+        'Legendary items': '传奇物品',
+        'Divination Cards': '命运卡',
+        'Vendor Recipes': '商店配方',
+        'Gold': '金币',
+        'Current League: Curse of the Allflame': '当前赛季: 全焰之咒',
+        'Curse of the Allflame': '全焰之咒',
+        'Endgame (level 68+)': '终局内容 (等级 68+)',
+        'Scarabs, Fragments and Splinters': '圣甲虫、碎片与裂片',
+        'Endgame - Maps, Contracts, Logbooks etc': '终局 - 地图、契约、日志等',
+        'Endgame - Rares': '终局 - 稀有物品',
+        'Endgame - Special Bases & Crafting': '终局 - 特殊底材与工艺',
+        'Endgame - Jewels, Flasks, Tinctures': '终局 - 珠宝、药水、酊剂',
+        'Endgame - Highlight specific bases': '终局 - 高亮特定底材',
+        'Campaign (level 1-67)': '剧情阶段 (等级 1-67)',
+        'Campaign & Leveling': '剧情与升级',
+        'Miscellaneous': '杂项',
+        'League-specific items and mods': '赛季专属物品与词缀',
+        'Chancing Bases': '点化底材',
+        'Currency & Rewards': '通货与奖励',
+        'FilterBlade is an online editor for loot-filters for the games Path of Exile 1 and 2 based on NeverSink\'s filters.':
+            'FilterBlade 是一个在线战利品 filter 编辑器，适用于游戏《流放之路1》和《流放之路2》，基于 NeverSink 的 filter 方案。',
+        'User-created Modules': '用户创建模块',
+        'Game mode: Softcore': '游戏模式: 软核',
+        'Game mode:Softcore': '游戏模式: 软核',
+        'Auto-Adjust for build': '根据BD自动调整',
+        'Export filter to PoE': '导出 filter 到PoE',
+        'Import to PoE via game files on your PC': '通过您PC上的游戏文件导入到PoE',
+        'import to PoE via game files on your PC': '通过您PC上的游戏文件导入到PoE',
+        'Download / Export': '下载 / 导出',
+        'Export / Download': '导出 / 下载',
+        "Modules are building blocks for filters. If you have multiple filters using common changes you can keep the common changes in a module. You can also use other people's modules on the My Modules tab.":
+            '模块是 filter 的构建块。如果您有多个 filter 使用相同的更改，可以将这些通用更改保存在一个模块中。您也可以在"我的模块"标签页中使用其他人的模块。',
+        "If you change a color here, it will affect every entry in the filter that uses that color. Items that have the default appearance won't be listed here and can't be changed using the Color Editor.":
+            '在此处更改颜色会影响 filter 中使用该颜色的所有条目。具有默认外观的物品不会在此列出，也无法通过颜色编辑器更改。',
+        'Additional means to edit the filter. These are designed for experienced FilterBlade users, developers and filter authors.':
+            '额外的 filter 编辑手段。专为有经验的 FilterBlade 用户、开发者和 filter 作者设计。',
+        'Use the FilterBlade appearance editor to find the right colors for your filter and preview them live.':
+            '使用 FilterBlade 外观编辑器为您的 filter 找到合适的颜色并实时预览。',
+        'FilterBlade now supports mobile devices! You can open the navigation using the button in the top right corner.':
+            'FilterBlade 现已支持移动设备！您可以使用右上角的按钮打开导航菜单。',
+        'Clicking the buttons below will compare how your current filter will look like with different strictnesses. Styles will not actively change your current filter. You can change the used style/strictness without losing any changes on the Customize tab afterwards.':
+            '点击下方按钮可比较当前 filter 在不同严格度下的效果。样式不会主动修改您当前的 filter。之后您可以在"自定义"标签页中更改所用样式/严格度，而不会丢失任何更改。',
+        "If you want to delete these auto-saved changes, click on 'Reset filter'": '如需删除这些自动保存的更改，请点击"重置 filter"',
+        'Quick edits that affect the whole filter and are applied BEFORE (i.e. have less priority than) your other changes.':
+            '影响整个 filter 的快速编辑，在其他更改之前应用（即优先级低于您的其他更改）。',
+        'Download the filter, or sync it to your PoE profile!': '下载 filter，或同步到您的 PoE 账户！',
+        'Upload Customizer Definition Option-File': '上传自定义器定义选项文件',
+        'Upload Option File': '上传选项文件',
+        'Download current saveFile': '下载当前存档文件',
+        'continuous automated updates & fixes': '持续自动更新与修复',
+        'economy updates for tierlists of uniques, currency, etc.': '传奇物品、通货等分级列表的经济数据更新',
+        'support a small development team :)': '支持小型开发团队 :)',
+        'Support us and get something in return,': '支持我们并获得回报，',
+        'Premium Auto-Update feature:': '高级自动更新功能：',
+        'Sync Auto (overwritten by code!)': '自动同步（会被代码覆盖！）',
+        'Sync (overwritten by code!)': '同步（会被代码覆盖！）',
+        'Download (overwritten by code!)': '下载（会被代码覆盖！）',
+        "'Auto-Adjust for Build'": '"根据BD自动调整"',
+        'Copy filter': '复制 filter',
+        'PoE 1': '流放之路1', 'PoE 2': '流放之路2',
+        'Start': '开始', 'Okay!': '确定！', 'Okay': '确定',
+        'Please consider supporting us by disabling AdBlock.': '请考虑关闭AdBlock以支持我们。',
+        'Generate a filter specific to your inGame character!': '生成专属于您游戏角色的 filter！',
+        'Strictness:': '严格度:',
+        'Select how many items are shown.': '选择显示的物品数量。',
+        'Safely fine-tune the entire filter in detail.': '安全地详细微调整个 filter。',
+        'Default filter colors:': '默认 filter 颜色:',
+        'Change loot pile background image': '更改战利品堆背景图片',
+        'Click an Item above to edit.': '点击上方物品进行编辑。',
+        'Decorators': '装饰器', 'What are Decorators?': '什么是装饰器？',
+        'Create your own items and see how they look in the filter.': '创建您自己的物品，查看它们在 filter 中的显示效果。',
+        'Theme editing is coming soon to PoE 1!': '主题编辑功能即将登陆流放之路1！',
+        'Change reoccurring colors and sounds of the filter.': '更改 filter 中重复使用的颜色和音效。',
+        'Legacy Global Color&Sound Editors': '旧版全局颜色与音效编辑器',
+        'About the filter': '关于 filter', 'Load filter from saveFile': '从存档文件加载 filter',
+        'Finish': '完成', 'Execute': '执行', 'Apply': '应用',
+        'Save': '保存', 'Load': '加载', 'Export': '导出', 'Import': '导入',
+        'Reset': '重置', 'Delete': '删除', 'Edit': '编辑', 'Add': '添加',
+        'Cancel': '取消', 'Confirm': '确认', 'Yes': '是', 'No': '否',
+        'Search': '搜索', 'Settings': '设置', 'About': '关于',
+        'Home': '首页', 'Overview': '概览', 'Customize': '自定义',
+        'Simulate': '模拟', 'Themes': '主题', 'Advanced': '高级',
+        'Colors': '颜色', 'Filters': '过滤器', 'Tierlists': '分级列表',
+        'My filters': '我的 filter', 'My Modules': '我的模块',
+        'Create new filter': '创建新 filter', 'Create new module': '创建新模块',
+        'Login with PoE': '使用PoE登录', 'Logout': '退出登录',
+        'Softcore': '软核', 'Hardcore': '专家', 'SSF': '独狼',
+        'Standard': '标准', 'Trade': '交易', 'Stash': '仓库',
+        'Currency': '通货', 'Map': '地图', 'Gem': '宝石',
+        'Flask': '药水', 'Weapon': '武器', 'Armour': '护甲',
+        'Unique': '传奇', 'Rare': '稀有', 'Magic': '魔法',
+        'Level': '等级', 'Quality': '品质', 'Sockets': '插槽',
+        'Links': '连接', 'Corrupted': '已腐化', 'Mirrored': '已复制',
+        'Identified': '已鉴定', 'Unidentified': '未鉴定',
+        'Show': '显示', 'Hide': '隐藏', 'Style': '样式',
+        'Color': '颜色', 'Size': '大小', 'Sound': '音效',
+        'Rule': '规则', 'Condition': '条件', 'Action': '动作',
+        'Priority': '优先级', 'League': '赛季',
+        'Download': '下载', 'Upload': '上传', 'Sync': '同步',
+        'Recommended': '推荐', 'Premium feature': '高级功能',
+        'Support us': '支持我们', 'Patreon': 'Patreon',
+        'Discord': 'Discord社区', 'GitHub': 'GitHub',
+        'FAQ': '常见问题', 'Report an issue': '反馈问题',
+        'Get started!': '立即开始！', 'Resume later': '稍后继续',
+        'Go Back': '返回', 'Name': '名称', 'Config': '配置', 'Video': '视频',
+        'Light Mode': '浅色模式', 'Dark Mode': '深色模式',
+        'Copy to Clipboard': '复制到剪贴板',
+        'Reset filter': '重置 filter', 'Export filter': '导出 filter',
+        'Customize filter': '自定义 filter', 'Import Item from PoE': '从PoE导入物品',
+        'Generate loot': '生成战利品', 'Generate valuable loot': '生成高价值战利品',
+        'Item Builder': '物品构建器', 'Loot Generator': '战利品生成器',
+        'Switch view': '切换视图', 'User-created': '用户创建',
+        'Game mode:': '游戏模式:', 'Auto-Adjust': '自动调整',
+        'for build': '适配BD', 'Please wait...': '请稍候...',
+        'Checking for filter to load...': '正在检查要加载的 filter...',
+        'Initializing FilterBlade...': '正在初始化 FilterBlade...',
+        'Load Auto-Save?': '加载自动保存？', 'No, thanks': '不用了，谢谢',
+        'Filter loaded via sharing link!': '已通过分享链接加载 filter！',
+        'Sound files download:': '音效文件下载:', 'Zone Level:': '区域等级:',
+        'Legacy Global Colors & Sound Editors': '旧版全局颜色与音效编辑器',
+        'Global One-Click Edits': '全局一键编辑',
+        'Reset filter settings': '重置 filter 设置',
+        'Welcome to FilterBlade!': '欢迎来到 FilterBlade！',
+        'Our new design!': '全新设计！',
+        'Project Manager, Lead Developer.': '项目经理，首席开发者。',
+        'Developer, Designer, Content Creator.': '开发者、设计师、内容创作者。',
+        'Graphic Designer.': '平面设计师。',
+        'Developer, data analyst, php dev': '开发者、数据分析师、PHP开发',
+        'Contact': '联系方式', 'Privacy Policy': '隐私政策',
+        'AlwaysFloat Technologies': 'AlwaysFloat 科技',
+        'Business mail: FilterBladeContact@gmail.com': '商务邮箱：FilterBladeContact@gmail.com',
+        'This site is fan-made and not affiliated with Grinding Gear Games in any way.':
+            '本站为粉丝制作，与 Grinding Gear Games 无任何关联。',
+        'based on NeverSink\'s filters.': '基于 NeverSink 的 filter 方案。',
+        'It turns': '它将', 'Into': '转变为', 'build': 'BD', 'progress': '进度',
+        'Open the': '打开', 'Path of Exile 1 and 2': '流放之路1和2',
+        'this': '这个',
+        'in the game. If you want, you can further fine-tune it using the': '在游戏中。如果您愿意，可以使用以下工具进一步微调：',
+        'and select your inGame character class, then apply and': '并选择您的游戏内角色职业，然后应用并',
+        'the filter. That\'s it!': 'filter。就这么简单！',
+        'You\'re done? Head to the': '完成了？前往',
+        'to save the filter to your FilterBlade account and either download a filter-file': '将 filter 保存到您的 FilterBlade 账户，可以下载 filter 文件',
+        'Login with your PoE account to save your filter during': '使用您的 PoE 账户登录，以便在以下期间保存 filter：',
+        'When you return to FilterBlade, you will see all your saved filters on the': '当您返回 FilterBlade 时，可以在以下位置查看所有已保存的 filter：',
+        'tab shows typical items with their current visuals and explanations of why they are special. Good to get an overview of the current filter and learn about its colors and highlights.':
+            '标签页展示典型物品的当前视觉效果及其特殊原因的说明。有助于全面了解当前 filter，并了解其颜色和高亮规则。',
+        'Planning a big rework of colors, sizes and sounds? The': '计划对颜色、大小和音效进行大规模调整？',
+        'tab has a lot of tool for large-scale edits like that!': '标签页提供了大量用于此类批量编辑的工具！',
+        'Use the search bar at the top, check our': '使用顶部的搜索栏，查看我们的',
+        'Version 1.1.6415, August 2nd': '版本 1.1.6415，8月2日',
+        'to PoE': '到PoE', 'We also made a': '我们还制作了', 'about them.': '的相关介绍。',
+        'For your day-to-day filter creator!': '为您的日常 filter 创作而设计！',
+        'You can also view': '您还可以查看', 'Workflow': '工作流程',
+        'Useful features': '实用功能', 'Did I break it?': '我把它弄坏了？',
+        'export screen': '导出页面', 'tab.': '标签页。', 'For now...': '目前……',
+        "That's it!": '就这么简单！', 'screen to continue editing!': '页面继续编辑！',
+        'Utilities!': '实用工具！', 'Learn and see': '学习与预览',
+        'Do a redesign!': '重新设计！', 'Need help?': '需要帮助？',
+        'screen.': '页面。',
+        'By default, most items look the same, no matter how rare or useful or valuable.': '默认情况下，大多数物品看起来都一样，无论其稀有度、实用性或价值如何。',
+        'A filter highlights items based on type and value (based on current inGame economy), and hides bad ones.': 'filter 会根据类型和价值（基于当前游戏内经济）高亮显示有用物品，并隐藏无用物品。',
+        'You can customize them to fit to your character and style!': '您可以自定义它们以适配您的角色和风格！',
+        'They are officially supported tools for Path of Exile!': '它们是《流放之路》官方支持的工具！',
+        "You can come back later to fine-tune when you notice things that you'd like to change!": '当您发现需要调整的内容时，可以随时回来进行微调！',
+        "FilterBlade will ALWAYS give you the newest up-to-date filter. You can customize a filter now and load it again later and automatically get an updated version when you export!":
+            'FilterBlade 始终为您提供最新的 filter。您可以现在自定义 filter，稍后重新加载，并在导出时自动获取更新版本！',
+        "The Customizer is built fail-save and it's hard to 'break' your filter by using it. You will see warnings if you're about to do something dangerous. There is also additional validation when exporting.":
+            '自定义器内置防错机制，很难因操作而"损坏" filter。当您即将执行危险操作时会看到警告。导出时还有额外的验证。',
+        'You can right-click e.g. an item to jump to its rule in the Customizer or a tierlist element to move it! (Long press on mobile)':
+            '您可以右键点击例如某个物品，跳转到自定义器中对应的规则，或点击分级列表元素来移动它！（移动端长按）',
+        'Project Focus: Architecture, Domain Languages, Data Processing': '项目重点：架构、领域语言、数据处理',
+        'Project Focus: Customization, Layout and UI, General Development.': '项目重点：自定义、布局与UI、通用开发。',
+        'Project Focus: Icons, Backgrounds, Videos.': '项目重点：图标、背景、视频。',
+        'Project Focus: Loot generation, layout and UI, save/load functions.': '项目重点：战利品生成、布局与UI、保存/加载功能。',
+        ', or ask in our': '，或在我们的',
+        'Test & Simulate': '测试与模拟',
+        'Review changes': '审查更改',
+        'Visualize every single change that you customized in the currently active filter':
+            '可视化当前激活 filter 中您自定义的每一处更改',
+        'Compare Strictness': '比较严格度',
+        'Compare Styles': '比较样式',
+        'Filter Line Translator': 'Filter 行翻译器',
+        'Filter Structure': 'Filter 结构',
+        'WARNING: This severely limits the functionality on FilterBlade:':
+            '警告：这将严重限制 FilterBlade 的功能：',
+        'Expect bugs!': '可能会出现错误！',
+        'You CAN test the uploaded filters in the loot simulator':
+            '您可以在战利品模拟器中测试上传的 filter',
+        'You CAN use the advanced->structure screen to change the filter':
+            '您可以使用"高级->结构"页面修改 filter',
+        "CAN'T reliably use the customizer with uploaded filters. There WILL be bugs.":
+            '无法可靠地将自定义器与上传的 filter 配合使用。一定会出现错误。',
+        "CAN'T use the 'my filters' system with uploaded filters. Just doesn't work.":
+            '无法将"我的 filter"系统与上传的 filter 配合使用。该功能不可用。',
+        'This will ALSO be buggy with filters created on FilterBlade. Please use the':
+            '这对在 FilterBlade 上创建的 filter 也会出现问题。请使用',
+        'system instead of re-uploading files!.': '系统，而非重新上传文件！',
+        'I understand': '我已了解',
+        'This file contains your full FilterBlade filter and saveState.':
+            '此文件包含您完整的 FilterBlade filter 和保存状态。',
+        'You can download it as backUp or to move it between the beta and live version of':
+            '您可以将其作为备份下载，或在测试版与正式版之间迁移',
+        'The option-file defines the connections between a filter and the customizer and':
+            '选项文件定义了 filter 与自定义器之间的连接，以及',
+        "other player's filters": '其他玩家的 filter',
+        'your synced filters': '您同步的 filter',
+        'one-time upload to your PoE account': '一次性上传到您的 PoE 账户',
+        'no manual import required': '无需手动导入',
+        'instantly available inGame': '游戏内立即可用',
+        'manual file download': '手动文件下载',
+        'no console support': '不支持主机平台',
+        'Get all strictnesses': '获取所有严格度',
+        'as ZIP': 'ZIP压缩包',
+        'Individual files': '单独文件',
+        'Support the FilterBlade Dev-Team,': '支持 FilterBlade 开发团队，',
+        'Intro': '简介',
+        'Test Local Filter': '测试本地 filter',
+        'Test Local': '测试本地',
+        'RARE CURRENCY': '稀有通货',
+        'Detailed explanation': '详细说明',
+        'Items have a sound that is linked to their value-tier. All high tier currencies':
+            '物品的音效与其价值等级挂钩。所有高等级通货',
+        'They also come with a minimap-icon. The icons can be seen next to the item previ':
+            '它们还附带小地图图标。图标可以在物品预览旁看到',
+        'You can change all of these settings in the customizer screen here. To quickly j':
+            '您可以在此处的自定义器页面更改所有这些设置。要快速跳转',
+        'Their powerful effects aside high currencies act as trade goods for players. Cha':
+            '除了强大的效果外，高等级通货还充当玩家间的交易媒介。混',
+        'Divine Orb': '神圣石',
+        'Exalted Orb': '崇高石',
+        'Chaos Orb': '混沌石',
+        'Right-Click for more options.': '右键点击查看更多选项。',
+        'Hold Shift for all stats.': '按住Shift查看所有属性。',
+        'Class:': '类别:',
+        'BaseType:': '基础类型:',
+        'DropLevel:': '掉落等级:',
+        'Click item to play sound': '点击物品播放音效',
+        'MapIcon:': '地图图标:',
+        'large Red Star': '大型红色星形',
+        'Beam:': '光柱:',
+        'Red': '红色',
+        'Entry ID:': '条目ID:',
+        'Stackable Currency': '可堆叠通货',
+        'Based on this rule in the filter:': '基于 filter 中的此规则:',
+        'Based on the rule in the filter:': '基于 filter 中的规则:',
+        'High Tier': '高等级',
+        'Mid Tier': '中等级',
+        'Low Tier': '低等级',
+        "Don't underrate chance orbs! You can buy maps from Kirac at the start of the league quickly through the atlas":
+            '不要低估机会石！您可以在赛季初期通过异界图鉴从基拉克处快速购买地图',
+        'Profile': '个人资料',
+        'Normal': '普通',
+        'Semi-Strict': '半严格',
+        'Duplicate filter': '复制 filter',
+        'Upload Local Filter': '上传本地 filter',
+        'Local Filter': '本地 filter',
+        'Local': '本地',
+        'Up- or download your Save-File': '上传或下载您的存档文件',
+        "Start customizing and head over to the 'Export to PoE' screen once you're done.":
+            '开始自定义，完成后前往"导出到 PoE"页面。',
+        "Start customizing and head over to the Advanced -> 'My Modules' once you're done.":
+            '开始自定义，完成后前往"高级 -> 我的模块"页面。'
+    };
+
+    // ==================== 4. 上下文规则引擎 (v7.0 原样保留) ====================
+    const CONTEXT_RULES = [
+        { word: 'Test', rules: [
+            { selector: '.local-filter-test, [class*="localTest"], [class*="testLocal"]', translation: '测试本地' },
+            { selector: '.simulate-panel, [class*="simulate"]', translation: '测试' }
+        ], fallback: '测试' },
+        { word: 'Map', rules: [
+            { selector: '.atlas-panel, .map-tier-selector, [class*="map"]', translation: '地图' },
+            { selector: '.mapping-config, .data-bind-panel, [class*="mapping"]', translation: '映射' }
+        ], fallback: '地图' },
+        { word: 'Style', rules: [
+            { selector: '.visual-style-picker, .appearance-panel', translation: '外观样式' },
+            { selector: '.code-editor, .syntax-highlight', translation: '代码风格' }
+        ], fallback: '样式' },
+        { word: 'Level', rules: [
+            { selector: '.gem-level-input, [class*="gemLevel"]', translation: '宝石等级' },
+            { selector: '.drop-level-input, [class*="dropLevel"]', translation: '掉落等级' },
+            { selector: '.item-level-input, [class*="itemLevel"]', translation: '物品等级' },
+            { selector: '.area-level-input, [class*="areaLevel"]', translation: '区域等级' }
+        ], fallback: '等级' },
+        { word: 'Color', rules: [
+            { selector: '.text-color-picker, [class*="textColor"]', translation: '文字颜色' },
+            { selector: '.bg-color-picker, [class*="backgroundColor"]', translation: '背景颜色' },
+            { selector: '.border-color-picker, [class*="borderColor"]', translation: '边框颜色' }
+        ], fallback: '颜色' }
+    ];
+
+    // ==================== 5. 用户自定义词典 (v7.0 原样保留) ====================
+    let userDict = {};
+    try { userDict = GM_getValue('filterblade_user_dict', {}); } catch (e) {}
+    GM_registerMenuCommand('📝 编辑自定义词典', () => {
+        const input = prompt('请输入自定义翻译（JSON格式）:\n例: {"New Word": "新词翻译"}', JSON.stringify(userDict));
+        if (input !== null) {
+            try { GM_setValue('filterblade_user_dict', JSON.parse(input)); alert('✅ 已保存，刷新生效'); location.reload(); }
+            catch (e) { alert('❌ JSON格式错误: ' + e.message); }
+        }
+    });
+
+    // ==================== 6. 翻译引擎 (v7.0 原样保留) ====================
+    const MERGED_DICT = { ...BASE_DICT, ...userDict };
+    const NORMALIZED_DICT = {};
+    const ALNUM_INDEX = {};
+    const TRUNCATION_INDEX = {};
+
+    for (const [key, value] of Object.entries(MERGED_DICT)) {
+        const nk = normalizeText(key);
+        NORMALIZED_DICT[nk] = value;
+        const ak = stripToAlnum(nk);
+        if (ak && !WHITELIST_WORDS.has(ak)) ALNUM_INDEX[ak] = value;
+        if (nk.length > 25) TRUNCATION_INDEX[nk.substring(0, 40).toLowerCase()] = value;
+    }
+
+    const SORTED_KEYS = Object.keys(NORMALIZED_DICT).sort((a, b) => b.length - a.length);
+    const translatedNodes = new WeakSet();
+    const FB_ATTR = 'data-fb-translated';
+    const FB_EXP_ATTR = 'data-fb-expected';
+
+    const MODULE_FINGERPRINT = 'building blocks for filters';
+    const MODULE_TRANSLATION = '模块是 filter 的构建块。如果您有多个 filter 使用相同的更改，可以将这些通用更改保存在一个模块中。您也可以在"我的模块"标签页中使用其他人的模块。';
+
+    function getContextTranslation(text, el) {
+        const rule = CONTEXT_RULES.find(r => r.word === text);
+        if (!rule || !el) return null;
+        for (const r of rule.rules) if (el.closest(r.selector)) return r.translation;
+        return rule.fallback;
+    }
+
+    function mergeAdjacentTextNodes(parent) {
+        if (!parent?.childNodes) return;
+        const nodes = Array.from(parent.childNodes);
+        for (let i = 0; i < nodes.length; i++) {
+            const n = nodes[i];
+            if (n.nodeType !== 3 || translatedNodes.has(n)) continue;
+            let merged = n.textContent, j = i + 1;
+            while (j < nodes.length && nodes[j].nodeType === 3 && !translatedNodes.has(nodes[j])) {
+                merged += nodes[j].textContent; nodes[j].textContent = ''; translatedNodes.add(nodes[j]); j++;
+            }
+            if (j > i + 1) n.textContent = merged;
+        }
+    }
+
+    function tryDomLevelFix(node) {
+        const parent = node.parentElement;
+        if (!parent || parent.hasAttribute(FB_ATTR)) return false;
+        const fullText = normalizeText(parent.textContent || '');
+        if (!fullText.includes(MODULE_FINGERPRINT)) return false;
+        parent.textContent = MODULE_TRANSLATION;
+        parent.setAttribute(FB_ATTR, '1'); parent.setAttribute(FB_EXP_ATTR, MODULE_TRANSLATION);
+        const walker = document.createTreeWalker(parent, NodeFilter.SHOW_TEXT, null, false);
+        while (walker.nextNode()) translatedNodes.add(walker.currentNode);
+        return true;
+    }
+
+    function translateNode(node) {
+        if (node.nodeType !== 3) return;
+        const parent = node.parentElement;
+        if (!parent || ['SCRIPT','STYLE','TEXTAREA','INPUT','NOSCRIPT'].includes(parent.tagName)) return;
+
+        if (parent.hasAttribute(FB_ATTR)) {
+            const exp = parent.getAttribute(FB_EXP_ATTR);
+            if (exp && node.textContent !== exp && /[a-zA-Z]{2,}/.test(node.textContent)) {
+                node.textContent = exp; translatedNodes.add(node);
+            }
+            return;
+        }
+        if (translatedNodes.has(node)) return;
+
+        const normalized = normalizeText(node.textContent);
+        if (!normalized) return;
+        if (isWhitelistedOnly(normalized)) { translatedNodes.add(node); return; }
+
+        if (normalized.includes('building') || normalized.includes('blocks')) {
+            if (tryDomLevelFix(node)) return;
+        }
+
+        let text = normalized, changed = false;
+
+        if (NORMALIZED_DICT[text]) { text = NORMALIZED_DICT[text]; changed = true; }
+
+        if (!changed && text.length > 25) {
+            const trunc = TRUNCATION_INDEX[text.substring(0, 40).toLowerCase()];
+            if (trunc) { text = trunc; changed = true; }
+        }
+
+        if (!changed) {
+            for (const key of SORTED_KEYS) {
+                if (key.length <= 3 || !text.includes(key)) continue;
+                const ctx = getContextTranslation(key, parent);
+                const rep = ctx || NORMALIZED_DICT[key];
+                if (!rep) continue;
+                let res = '', last = 0, idx = 0;
+                while ((idx = text.indexOf(key, last)) !== -1) {
+                    const cb = idx > 0 ? text[idx-1] : '';
+                    const ca = idx+key.length < text.length ? text[idx+key.length] : '';
+                    if ((!cb || !/[a-zA-Z0-9]/.test(cb)) && (!ca || !/[a-zA-Z0-9]/.test(ca))) {
+                        res += text.slice(last, idx) + rep; last = idx + key.length;
+                    } else { res += text.slice(last, idx + key.length); last = idx + key.length; }
+                }
+                res += text.slice(last);
+                if (res !== text) { text = res; changed = true; break; }
+            }
+        }
+
+        if (!changed && text.length < 80 && /^[a-zA-Z0-9\s\-_]+$/.test(text)) {
+            const ak = stripToAlnum(text);
+            if (ALNUM_INDEX[ak]) { text = ALNUM_INDEX[ak]; changed = true; }
+        }
+
+        if (changed) {
+            node.textContent = text; translatedNodes.add(node);
+            parent.setAttribute(FB_ATTR, '1'); parent.setAttribute(FB_EXP_ATTR, text);
+        }
+    }
+
+    function translateRoot(root) {
+        if (root.nodeType === 1) {
+            mergeAdjacentTextNodes(root);
+            root.querySelectorAll('*').forEach(el => mergeAdjacentTextNodes(el));
+        }
+        const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null, false);
+        const nodes = []; while (walker.nextNode()) nodes.push(walker.currentNode);
+        nodes.forEach(translateNode);
+    }
+
+    // ==================== 7. 诊断引擎 (v7.0 原样保留) ====================
+    function runSelfDiagnostic() {
+        const report = [`# FilterBlade v7.0.1 诊断报告`, `# ${new Date().toLocaleString()}`, ''];
+        report.push('## [检查1] 词典Key清洗一致性');
+        let ki = 0;
+        for (const [ok] of Object.entries(MERGED_DICT)) { if (normalizeText(ok) !== ok) { ki++; report.push(`⚠️ "${ok}"`); } }
+        report.push(ki === 0 ? '✅ 全部一致' : `${ki} 个不一致`, '');
+
+        report.push('## [检查2] DOM未翻译英文文本');
+        const w = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null, false);
+        let uc = 0; const SKIP = ['SCRIPT','STYLE','TEXTAREA','INPUT','CODE','PRE','NOSCRIPT'];
+        while (w.nextNode()) {
+            const n = w.currentNode, p = n.parentElement;
+            if (!p || SKIP.includes(p.tagName) || translatedNodes.has(n) || p.hasAttribute(FB_ATTR)) continue;
+            const raw = normalizeText(n.textContent);
+            if (!raw || !/[a-zA-Z]{2,}/.test(raw) || isWhitelistedOnly(raw)) continue;
+            uc++; if (uc <= 30) report.push(`[${uc}] "${raw.substring(0,80)}" <${p.tagName.toLowerCase()}>`);
+        }
+        report.push(uc === 0 ? '✅ 无未翻译文本' : `共 ${uc} 处`, '');
+
+        report.push('## [检查3] 已翻译节点英文残留');
+        const tw = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null, false);
+        let hc = 0;
+        while (tw.nextNode()) {
+            const n = tw.currentNode, p = n.parentElement;
+            if (!p || !translatedNodes.has(n)) continue;
+            const t = n.textContent;
+            if (!/[\u4e00-\u9fff]/.test(t) || !/[a-zA-Z]{3,}/.test(t)) continue;
+            const words = t.match(/[a-zA-Z][a-zA-Z0-9\-]{2,}/g) || [];
+            const bad = words.filter(w => !WHITELIST_WORDS.has(w.toLowerCase()));
+            if (bad.length) { hc++; if (hc<=20) report.push(`[${hc}] ${bad.join(',')} | "${t.substring(0,80)}"`); }
+        }
+        report.push(hc === 0 ? '✅ 无异常混杂' : `共 ${hc} 处`, '');
+        report.push(`## 汇总: Key=${ki}, 未翻译=${uc}, 混杂=${hc}`);
+
+        console.group('🔍 FilterBlade v7.0.1 诊断'); console.log(report.join('\n')); console.groupEnd();
+        const fn = `fb-diag-v7.0.1-${Date.now()}.txt`;
+        try {
+            const b = new Blob([report.join('\n')], {type:'text/plain;charset=utf-8'});
+            const u = URL.createObjectURL(b); const a = document.createElement('a');
+            a.href=u; a.download=fn; document.body.appendChild(a); a.click();
+            setTimeout(()=>{document.body.removeChild(a);URL.revokeObjectURL(u);},100);
+            alert(`✅ v7.0.1诊断完成\nKey=${ki} 未翻译=${uc} 混杂=${hc}\n${fn}`);
+        } catch(e) { alert(`✅ 诊断完成(F12查看)\nKey=${ki} 未翻译=${uc} 混杂=${hc}`); }
+    }
+    GM_registerMenuCommand('🔍 词典一致性自检', runSelfDiagnostic);
+
+    // ==================== 8. 反馈系统 (v7.0 原样保留) ====================
+    let feedbackMode = false, feedbackOverlay = null;
+    let collectedFeedbacks = GM_getValue('fb_collected_feedbacks', []);
+
+    function toggleFeedbackMode() {
+        feedbackMode = !feedbackMode;
+        if (feedbackMode) {
+            if (!feedbackOverlay) {
+                feedbackOverlay = document.createElement('div');
+                Object.assign(feedbackOverlay.style, {
+                    position:'fixed', top:'0', left:'0', right:'0', background:'#ff9800',
+                    color:'#fff', padding:'8px 16px', fontSize:'14px', zIndex:'2147483647',
+                    textAlign:'center', display:'flex', justifyContent:'center', alignItems:'center', gap:'16px'
+                });
+                feedbackOverlay.innerHTML = `<span>🔍 反馈模式已开启</span><button onclick="this.parentElement.remove()" style="background:#fff;color:#ff9800;border:none;padding:4px 12px;border-radius:4px;cursor:pointer;">✕ 关闭</button>`;
+                document.body.appendChild(feedbackOverlay);
+            }
+            document.body.style.cursor = 'crosshair';
+        } else { feedbackOverlay?.remove(); feedbackOverlay = null; document.body.style.cursor = ''; }
+    }
+
+    document.addEventListener('click', e => {
+        if (!feedbackMode || e.target === feedbackOverlay || feedbackOverlay?.contains(e.target)) return;
+        e.preventDefault(); e.stopPropagation();
+        const t = e.target, text = (t.textContent||'').trim();
+        if (!text || !/[a-zA-Z]/.test(text)) return;
+        collectedFeedbacks.push(`[${new Date().toLocaleTimeString()}] ${text} | <${t.tagName.toLowerCase()}> | ${t.className}`);
+        GM_setValue('fb_collected_feedbacks', collectedFeedbacks);
+        t.style.outline = '2px solid #4caf50'; setTimeout(() => t.style.outline = '', 500);
+    }, true);
+
+    GM_registerMenuCommand('🔍 切换反馈模式', toggleFeedbackMode);
+    GM_registerMenuCommand('📥 导出反馈', () => {
+        if (!collectedFeedbacks.length) return alert('暂无反馈');
+        navigator.clipboard.writeText(collectedFeedbacks.join('\n')).then(() => alert(`已复制 ${collectedFeedbacks.length} 条反馈`));
+    });
+
+    // ==================== 9. 初始化 (v7.0 原样保留) ====================
+    registerShortcutPanel();
+    bindShortcuts();
+    translateRoot(document.body);
+    let debounceTimer = null; const pending = new Set();
+    new MutationObserver(ms => {
+        for (const m of ms) if (m.type === 'childList') m.addedNodes.forEach(n => pending.add(n));
+        clearTimeout(debounceTimer);
+        debounceTimer = setTimeout(() => {
+            for (const n of pending) {
+                if (!n.isConnected) continue;
+                if (n.nodeType === 1) translateRoot(n); else if (n.nodeType === 3) translateNode(n);
+            }
+            pending.clear();
+        }, 300);
+    }).observe(document.body, { childList: true, subtree: true });
+    window.addEventListener('load', () => setTimeout(() => translateRoot(document.body), 500));
+})();
